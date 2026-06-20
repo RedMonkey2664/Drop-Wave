@@ -209,12 +209,18 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     [mergeIncoming, trySendPending]
   );
 
-  const maybeStart = useCallback(() => {
+  const maybeStart = useCallback((peerPresentOverride?: boolean) => {
+    // `peerPresent` is read from an explicit override when available because the
+    // caller often fires this in the same tick it calls setState({ peerPresent }),
+    // and stateRef only catches up after the next commit. Falling back to stateRef
+    // alone here meant the initiator (guest) never sent its offer — the core
+    // "files won't transfer" bug.
+    const peerPresent = peerPresentOverride ?? stateRef.current.peerPresent;
     if (
       amInitiatorRef.current &&
       !peerStartedRef.current &&
       peerRef.current &&
-      stateRef.current.peerPresent
+      peerPresent
     ) {
       peerStartedRef.current = true;
       void peerRef.current.start();
@@ -257,11 +263,11 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
             amInitiatorRef.current = ev.initiator;
             setState((s) => ({ ...s, peerPresent: ev.peers > 0 }));
             createPeer(ev.initiator);
-            maybeStart();
+            maybeStart(ev.peers > 0);
             break;
           case "peer-joined":
             setState((s) => ({ ...s, peerPresent: true }));
-            maybeStart();
+            maybeStart(true);
             break;
           case "peer-left":
             // Partner dropped — reset for a fresh handshake, keep the room open.

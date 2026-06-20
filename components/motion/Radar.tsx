@@ -31,7 +31,7 @@ export function Radar({
         reduce ? (
           <div
             key={i}
-            className="absolute rounded-full border border-aqua/20 animate-breathe"
+            className="absolute rounded-full border border-ink/15 animate-breathe"
             style={{ width: size * (0.4 + i * 0.28), height: size * (0.4 + i * 0.28) }}
           />
         ) : (
@@ -42,8 +42,8 @@ export function Radar({
               width: size,
               height: size,
               background:
-                "radial-gradient(circle, rgba(0,229,255,0.18) 0%, rgba(108,99,255,0) 70%)",
-              border: "1px solid rgba(0,229,255,0.25)",
+                "radial-gradient(circle, rgba(0,0,0,0.06) 0%, rgba(0,0,0,0) 70%)",
+              border: "1px solid rgba(0,0,0,0.18)",
             }}
             initial={{ scale: 0.25, opacity: 0 }}
             animate={

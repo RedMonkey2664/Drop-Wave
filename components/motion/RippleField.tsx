@@ -95,12 +95,15 @@ export function RippleField() {
 
       for (let i = ripples.length - 1; i >= 0; i--) {
         const r = ripples[i];
-        const age = (now - r.born) / r.dur;
+        // Clamp age to [0,1): a ripple's `born` (performance.now()) can be marginally
+        // *after* the rAF frame timestamp `now`, yielding a tiny negative age — and a
+        // negative radius makes canvas arc() throw IndexSizeError. Clamp defensively.
+        const age = Math.min(Math.max((now - r.born) / r.dur, 0), 1);
         if (age >= 1) {
           ripples.splice(i, 1);
           continue;
         }
-        const radius = easeOut(age) * r.maxR;
+        const radius = Math.max(easeOut(age) * r.maxR, 0);
         const fade = (1 - age) * 0.16;
         // two concentric rings per drop for a watery feel
         ctx.lineWidth = 1.2;

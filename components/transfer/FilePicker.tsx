@@ -10,7 +10,6 @@
 
 import { useRef, useState } from "react";
 import { motion as m, useReducedMotion } from "framer-motion";
-import { UploadCloud } from "lucide-react";
 import { DropLogo } from "@/components/motion/DropLogo";
 import { cn } from "@/lib/utils";
 
@@ -47,26 +46,35 @@ export function FilePicker({ onFiles }: { onFiles: (files: File[]) => void }) {
         handleFiles(e.dataTransfer.files);
       }}
       className={cn(
-        "group relative flex w-full cursor-pointer flex-col items-center justify-center gap-4 rounded-card border-2 border-dashed px-6 py-14 text-center transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aqua/60",
+        "group relative flex w-full cursor-pointer flex-col items-center justify-center gap-6 overflow-hidden rounded-card border border-dashed px-6 py-20 text-center transition-colors duration-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink/40 focus-visible:ring-offset-2 focus-visible:ring-offset-putty",
         dragOver
-          ? "border-aqua bg-aqua/5 shadow-glow"
-          : "border-border-subtle hover:border-aqua/40"
+          ? "border-ink bg-bone"
+          : "border-ink/25 hover:border-ink/50 hover:bg-bone/40"
       )}
     >
+      {/* the drop mark sits in a soft circular well that subtly lifts on hover/drag */}
       <m.div
-        animate={reduce ? undefined : { y: [0, -8, 0] }}
-        transition={{ duration: 3, repeat: Infinity, ease: "easeInOut" }}
+        className={cn(
+          "grid h-24 w-24 place-items-center rounded-full border border-ink/10 bg-bone/60 text-ink transition-colors duration-300",
+          dragOver && "border-ink/30 bg-paper"
+        )}
+        animate={reduce ? undefined : { y: dragOver ? -2 : [0, -6, 0] }}
+        transition={
+          dragOver
+            ? { duration: 0.3 }
+            : { duration: 3.2, repeat: Infinity, ease: "easeInOut" }
+        }
       >
-        <DropLogo size={56} pulse />
+        <DropLogo size={52} pulse />
       </m.div>
 
       <div>
-        <p className="flex items-center justify-center gap-2 text-base font-medium text-text-primary">
-          <UploadCloud size={18} className="text-aqua" />
-          {dragOver ? "Release to add files" : "Drop files here"}
+        <p className="font-display text-xl font-semibold tracking-tight text-ink">
+          {dragOver ? "Release to drop" : "Drop files here"}
         </p>
-        <p className="mt-1 text-sm text-text-secondary">
-          or <span className="text-aqua">browse</span> — photos, videos, anything
+        <p className="mt-1.5 text-sm text-graphite">
+          or <span className="font-medium text-ink underline decoration-ink/30 underline-offset-4">browse</span>
+          {" "}— photos, videos, anything
         </p>
       </div>
 

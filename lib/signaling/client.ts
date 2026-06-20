@@ -149,12 +149,38 @@ export function getSignalingUrl(): string {
   return "ws://localhost:8080";
 }
 
-/** STUN servers for ICE. STUN only helps peers discover their public address; it
- * relays no data. On the same Wi-Fi the connection stays fully local. */
+/**
+ * ICE servers for WebRTC.
+ *
+ * STUN only helps peers discover their public address; it relays no data, so on the
+ * same Wi-Fi the connection stays fully local. But when two users are on DIFFERENT
+ * networks behind strict/symmetric NATs, a direct path often can't be punched and the
+ * connection needs a TURN relay (the only point where bytes may pass through a server).
+ *
+ * TURN is optional and OFF by default. To enable it for production (recommended once
+ * the app is public on Vercel), set these env vars:
+ *   NEXT_PUBLIC_TURN_URLS=turn:your-turn-host:3478,turns:your-turn-host:5349
+ *   NEXT_PUBLIC_TURN_USERNAME=...
+ *   NEXT_PUBLIC_TURN_CREDENTIAL=...
+ */
 export function getIceServers(): RTCIceServer[] {
-  const fromEnv = process.env.NEXT_PUBLIC_STUN_URLS;
-  const urls = fromEnv
-    ? fromEnv.split(",").map((u) => u.trim()).filter(Boolean)
+  const splitUrls = (v?: string) =>
+    (v ?? "").split(",").map((u) => u.trim()).filter(Boolean);
+
+  const stunUrls = process.env.NEXT_PUBLIC_STUN_URLS
+    ? splitUrls(process.env.NEXT_PUBLIC_STUN_URLS)
     : ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"];
-  return [{ urls }];
+
+  const servers: RTCIceServer[] = [{ urls: stunUrls }];
+
+  const turnUrls = splitUrls(process.env.NEXT_PUBLIC_TURN_URLS);
+  if (turnUrls.length > 0) {
+    servers.push({
+      urls: turnUrls,
+      username: process.env.NEXT_PUBLIC_TURN_USERNAME,
+      credential: process.env.NEXT_PUBLIC_TURN_CREDENTIAL,
+    });
+  }
+
+  return servers;
 }

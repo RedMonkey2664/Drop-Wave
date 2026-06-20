@@ -1,0 +1,39 @@
+# Fly.io config for the DropWave signaling server.
+#
+# Deploy from THIS directory:
+#     cd server/signaling
+#     fly launch --no-deploy   # first time only — pick/confirm an app name & region
+#     fly deploy
+#
+# `app` must be globally unique across Fly. If "dropwave-signaling" is taken,
+# change it here (or let `fly launch` rename it) — your URL becomes
+# https://<app>.fly.dev and the WebSocket is wss://<app>.fly.dev
+app = "dropwave-signaling"
+primary_region = "iad"   # change to one near your users, e.g. "bom" (Mumbai), "lhr", "sin"
+
+[build]
+  dockerfile = "Dockerfile"
+
+# Fly terminates TLS for us and forwards to the container's internal port.
+# Browsers can connect over wss://<app>.fly.dev (port 443) with no extra config.
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # Keep at least one machine warm so the first pairing isn't delayed by a cold
+  # start. Set to 0 to save free-tier allowance (adds a ~2s wake on first connect).
+  min_machines_running = 1
+  auto_stop_machines = "off"
+  auto_start_machines = true
+
+  # Health check hits the server's GET /health endpoint.
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/health"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
+  cpus = 1

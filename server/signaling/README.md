@@ -34,12 +34,44 @@ Messages are JSON over a single WebSocket.
 | `{type:"signal", data}`                  | Relayed handshake blob from the peer.    |
 | `{type:"room-full"}` / `{type:"error"}`  | Rejections.                              |
 
-## Deploy
+## Deploy to Fly.io
 
-Any Node host works (Render, Railway, Fly.io, a small VPS). Two requirements:
+A `Dockerfile` and `fly.toml` are included in this directory.
+
+```bash
+# one-time: install the CLI and sign in
+#   Windows (PowerShell):  iwr https://fly.io/install.ps1 -useb | iex
+#   macOS/Linux:           curl -L https://fly.io/install.sh | sh
+fly auth signup        # or: fly auth login
+
+cd server/signaling
+fly launch --no-deploy  # confirm app name + region (uses the bundled fly.toml)
+fly deploy
+```
+
+Your endpoint will be `https://<app>.fly.dev`, and the WebSocket the app connects to is
+`wss://<app>.fly.dev`. Verify it's up: open `https://<app>.fly.dev/health` — you should
+see `{"service":"dropwave-signaling","status":"ok",...}`.
+
+> `app` in `fly.toml` must be globally unique on Fly. If `dropwave-signaling` is taken,
+> change it (or let `fly launch` pick a name); your `wss://` URL changes to match.
+
+### Point the web app at it
+
+In your **Vercel** project → Settings → Environment Variables, add:
+
+```
+NEXT_PUBLIC_SIGNALING_URL = wss://<app>.fly.dev
+```
+
+then redeploy. (Locally, set the same in `.env.local`.)
+
+## Deploy notes (any host)
 
 1. **Serve over TLS (`wss://`)** in production — browsers require secure origins for
-   WebRTC/camera on non-localhost.
+   WebRTC/camera on non-localhost. Fly does TLS automatically.
 2. Set the app's `NEXT_PUBLIC_SIGNALING_URL` to your `wss://…` URL.
+3. For users on **different networks**, also configure a TURN relay via the app's
+   `NEXT_PUBLIC_TURN_URLS` / `…_USERNAME` / `…_CREDENTIAL` env vars (see `.env.example`).
 
 A `GET /health` endpoint is provided for platform health checks.

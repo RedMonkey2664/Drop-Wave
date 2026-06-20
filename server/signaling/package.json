@@ -1,0 +1,16 @@
+{
+  "name": "dropwave-signaling",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DropWave WebRTC signaling relay. Handshake only — never sees file data.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

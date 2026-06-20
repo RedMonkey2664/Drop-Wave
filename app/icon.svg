@@ -1,0 +1,7 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- App Router file-based favicon (Next serves this hashed → busts old cached icon). -->
+  <rect width="512" height="512" rx="112" fill="#c4c3b6"/>
+  <circle cx="256" cy="256" r="200" stroke="#000000" stroke-width="14"/>
+  <rect x="155" y="120" width="50" height="272" rx="24" fill="#000000"/>
+  <path d="M205 130 A126 126 0 0 1 205 382" stroke="#000000" stroke-width="50" fill="none"/>
+</svg>

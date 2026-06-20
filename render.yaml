@@ -1,0 +1,24 @@
+# Render Blueprint — deploys the DropWave signaling server (handshake relay only;
+# never sees file data) as a free web service with WebSocket + TLS support.
+#
+# How to use:
+#   1. Push this file to GitHub (done).
+#   2. On https://render.com → New → Blueprint → connect this repo.
+#   3. Render reads this file and creates the service. Click "Apply".
+#   4. Your URL becomes https://dropwave-signaling.onrender.com
+#      → use wss://dropwave-signaling.onrender.com as NEXT_PUBLIC_SIGNALING_URL in Vercel.
+#
+# Note: free services sleep after ~15 min idle and cold-start (~30-50s) on the next
+# connection. Fine for a hobby app; upgrade the plan to keep it always-on.
+services:
+  - type: web
+    name: dropwave-signaling
+    runtime: node
+    plan: free
+    rootDir: server/signaling
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: "20"

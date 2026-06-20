@@ -25,11 +25,13 @@ export function LiquidProgress({
   const pct = Math.max(0, Math.min(1, progress));
   const heightPct = `${pct * 100}%`;
 
+  // Monochrome "Structured" palette: the in-flight fill is ink-on-putty (no blue),
+  // success uses the green status token. Keeps the transfer animation on-brand.
   const fill =
     tone === "success"
-      ? "linear-gradient(180deg, rgba(46,230,168,0.35) 0%, rgba(46,230,168,0.12) 100%)"
-      : "linear-gradient(180deg, rgba(0,229,255,0.30) 0%, rgba(108,99,255,0.12) 100%)";
-  const waveColor = tone === "success" ? "rgba(46,230,168,0.5)" : "rgba(0,229,255,0.5)";
+      ? "linear-gradient(180deg, rgba(63,111,94,0.32) 0%, rgba(63,111,94,0.12) 100%)"
+      : "linear-gradient(180deg, rgba(0,0,0,0.16) 0%, rgba(0,0,0,0.04) 100%)";
+  const waveColor = tone === "success" ? "rgba(63,111,94,0.5)" : "rgba(0,0,0,0.28)";
 
   return (
     <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-card" aria-hidden>

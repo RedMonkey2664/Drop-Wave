@@ -19,11 +19,23 @@ export default function SendPage() {
   const router = useRouter();
   const session = useSession();
   const [selected, setSelected] = useState<File[]>([]);
+  // After a while waiting for a device, surface a hint instead of waiting silently.
+  const [slow, setSlow] = useState(false);
 
   // Once the peer connects, move to the live transfer screen (queued files auto-send).
   useEffect(() => {
     if (session.phase === "connected") router.push("/transfer");
   }, [session.phase, router]);
+
+  const waiting = session.phase === "pairing" && !session.peerPresent;
+  useEffect(() => {
+    if (!waiting) {
+      setSlow(false);
+      return;
+    }
+    const t = setTimeout(() => setSlow(true), 15000);
+    return () => clearTimeout(t);
+  }, [waiting]);
 
   function handleFiles(files: File[]) {
     setSelected((prev) => [...prev, ...files]);
@@ -109,6 +121,13 @@ export default function SendPage() {
           </span>
           <span className="font-mono text-text-muted">{formatBytes(totalBytes)}</span>
         </m.div>
+
+        {slow && (
+          <p className="mt-4 max-w-sm text-center text-sm text-text-muted">
+            Still waiting. On the other device, open this link or scan the QR — it should
+            land on a “Connecting…” screen within a few seconds.
+          </p>
+        )}
 
         {session.error && (
           <p className="mt-4 text-center text-sm text-error">{session.error.message}</p>

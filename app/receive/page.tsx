@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/Button";
 import { QRScanner } from "@/components/pairing/QRScanner";
 import { RoomCodeEntry } from "@/components/pairing/RoomCode";
 import { Splash } from "@/components/motion/Splash";
+import { Radar } from "@/components/motion/Radar";
 import { UnsupportedNotice } from "@/components/shared/UnsupportedNotice";
 import { useSession } from "@/lib/session/SessionProvider";
 import { normalizeRoomCode } from "@/lib/utils";
@@ -38,6 +39,8 @@ function ReceiveInner() {
     presetRoom ? "connecting" : "scan"
   );
   const [cameraReason, setCameraReason] = useState<string | null>(null);
+  // After a while with no peer, surface a hint instead of spinning silently.
+  const [slow, setSlow] = useState(false);
 
   // Auto-join when arriving from a scanned QR link (?room=CODE).
   useEffect(() => {
@@ -52,6 +55,18 @@ function ReceiveInner() {
     if (session.phase === "connected") router.push("/transfer");
   }, [session.phase, router]);
 
+  // Start a "taking too long" timer once we're waiting for the other device.
+  const waiting =
+    (mode === "connecting" || session.phase === "pairing") && !session.peerPresent;
+  useEffect(() => {
+    if (!waiting) {
+      setSlow(false);
+      return;
+    }
+    const t = setTimeout(() => setSlow(true), 12000);
+    return () => clearTimeout(t);
+  }, [waiting]);
+
   function connect(code: string) {
     setMode("connecting");
     session.join(code);
@@ -63,17 +78,22 @@ function ReceiveInner() {
 
   if (mode === "connecting" || session.phase === "pairing") {
     return (
-      <Card glow className="relative flex max-w-md flex-col items-center gap-5 p-10 text-center">
+      <Card className="relative flex max-w-md flex-col items-center gap-5 p-10 text-center">
         <Splash trigger={session.connectNonce} />
-        <div className="grid h-16 w-16 place-items-center rounded-full border border-aqua/40">
-          <span className="h-3 w-3 animate-breathe rounded-full bg-aqua" />
-        </div>
+        {/* "Looking for devices" radar pulse while we wait for the sender. */}
+        <Radar size={200} active={!session.peerPresent} />
         <h2 className="font-display text-xl font-semibold text-text-primary">
-          {session.peerPresent ? "Connecting…" : "Reaching the other device…"}
+          {session.peerPresent ? "Connecting…" : "Looking for the other device…"}
         </h2>
         <p className="text-sm text-text-secondary">
           Room <span className="font-mono text-text-primary">{session.roomCode}</span>
         </p>
+        {slow && !session.peerPresent && (
+          <p className="max-w-xs text-sm text-text-muted">
+            Taking longer than usual. Make sure the other device has DropWave open on the
+            <span className="text-text-secondary"> Send</span> screen with this code showing.
+          </p>
+        )}
         {session.error && <p className="text-sm text-error">{session.error.message}</p>}
       </Card>
     );

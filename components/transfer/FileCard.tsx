@@ -75,7 +75,7 @@ export function FileCard({
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
                 <m.path
                   d="M5 13l4 4L19 7"
-                  stroke="#2EE6A8"
+                  stroke="#3f6f5e"
                   strokeWidth="2.5"
                   strokeLinecap="round"
                   strokeLinejoin="round"

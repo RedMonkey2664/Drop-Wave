@@ -84,14 +84,22 @@ export class FileSender {
     });
   }
 
-  /** Send a batch of files sequentially. Resolves when all are sent (or canceled). */
-  async sendFiles(files: File[]): Promise<void> {
-    const metas: FileMeta[] = files.map((f) => ({
-      id: makeId(),
-      name: f.name,
-      size: f.size,
-      type: f.type || "application/octet-stream",
-    }));
+  /**
+   * Send a batch of files sequentially. Resolves when all are sent (or canceled).
+   *
+   * `providedMetas` lets the caller pre-assign each file's id so the SAME file fanned
+   * out to multiple peers shares one id — the session aggregates per-peer progress into
+   * a single "sending to the group" row. When omitted, ids are generated here.
+   */
+  async sendFiles(files: File[], providedMetas?: FileMeta[]): Promise<void> {
+    const metas: FileMeta[] =
+      providedMetas ??
+      files.map((f) => ({
+        id: makeId(),
+        name: f.name,
+        size: f.size,
+        type: f.type || "application/octet-stream",
+      }));
     const totalBytes = metas.reduce((n, m) => n + m.size, 0);
     this.send(encodeControl({ kind: "batch-start", files: metas, totalBytes }));
 

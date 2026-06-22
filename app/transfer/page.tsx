@@ -3,7 +3,15 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AnimatePresence, motion as m } from "framer-motion";
-import { CheckCircle2, Plus, Power, Wifi, WifiOff } from "lucide-react";
+import {
+  CheckCircle2,
+  DownloadCloud,
+  Plus,
+  Power,
+  Users,
+  Wifi,
+  WifiOff,
+} from "lucide-react";
 import { Header } from "@/components/ui/Header";
 import { Card } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
@@ -13,12 +21,13 @@ import { FileCard } from "@/components/transfer/FileCard";
 import { Splash } from "@/components/motion/Splash";
 import { useSession } from "@/lib/session/SessionProvider";
 import { reveal } from "@/lib/theme/tokens";
-import { formatBytes } from "@/lib/utils";
+import { cn, formatBytes } from "@/lib/utils";
 
 export default function TransferPage() {
   const router = useRouter();
   const session = useSession();
   const [showPicker, setShowPicker] = useState(false);
+  const [downloadingAll, setDownloadingAll] = useState(false);
 
   // Guard: if there's no live session (e.g. direct navigation / refresh), go home.
   useEffect(() => {
@@ -34,6 +43,27 @@ export default function TransferPage() {
 
   const canShare =
     typeof navigator !== "undefined" && typeof navigator.share === "function";
+
+  // "Download all": trigger each received file's download in turn. A short gap between
+  // clicks keeps browsers from collapsing them into a single blocked request (and the
+  // first one may ask permission to download multiple files — expected).
+  async function downloadAll() {
+    if (downloadingAll || session.received.length === 0) return;
+    setDownloadingAll(true);
+    try {
+      for (const f of session.received) {
+        const a = document.createElement("a");
+        a.href = f.url;
+        a.download = f.name;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        await new Promise((r) => setTimeout(r, 350));
+      }
+    } finally {
+      setDownloadingAll(false);
+    }
+  }
 
   async function share(id: string) {
     const file = receivedById.get(id);
@@ -86,6 +116,12 @@ export default function TransferPage() {
             <span className="font-mono text-xs text-text-muted">
               room {session.roomCode}
             </span>
+            {session.capacity > 2 && (
+              <span className="inline-flex items-center gap-1 text-xs text-text-muted">
+                <Users size={13} />
+                {session.peerCount} device{session.peerCount === 1 ? "" : "s"}
+              </span>
+            )}
           </div>
           <button
             onClick={() => {
@@ -133,7 +169,31 @@ export default function TransferPage() {
 
         {/* RECEIVING */}
         {hasIncoming && (
-          <Section title="Receiving">
+          <Section
+            title="Receiving"
+            action={
+              session.received.length >= 2 ? (
+                <button
+                  onClick={downloadAll}
+                  disabled={downloadingAll}
+                  className="group relative inline-flex items-center gap-2 overflow-hidden rounded-pill border border-ink/30 bg-bone px-4 py-2 text-xs font-semibold text-ink transition-colors hover:border-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink/40 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {/* ink-fill rises on hover (matches the landing's vignette hover) */}
+                  <span className="absolute inset-0 translate-y-full bg-ink transition-transform duration-300 ease-out group-hover:translate-y-0 group-disabled:hidden" />
+                  <DownloadCloud
+                    size={15}
+                    className={cn(
+                      "relative z-10 transition-colors group-hover:text-paper",
+                      downloadingAll && "animate-bounce"
+                    )}
+                  />
+                  <span className="relative z-10 transition-colors group-hover:text-paper">
+                    {downloadingAll ? "Saving…" : `Download all · ${session.received.length}`}
+                  </span>
+                </button>
+              ) : null
+            }
+          >
             <m.div
               variants={reveal.container}
               initial="hidden"
@@ -213,12 +273,23 @@ export default function TransferPage() {
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({
+  title,
+  action,
+  children,
+}: {
+  title: string;
+  action?: React.ReactNode;
+  children: React.ReactNode;
+}) {
   return (
     <div className="mb-6">
-      <h2 className="mb-3 text-xs font-medium uppercase tracking-[0.18em] text-text-muted">
-        {title}
-      </h2>
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <h2 className="text-xs font-medium uppercase tracking-[0.18em] text-text-muted">
+          {title}
+        </h2>
+        {action}
+      </div>
       {children}
     </div>
   );

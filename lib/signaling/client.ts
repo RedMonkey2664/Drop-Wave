@@ -8,10 +8,12 @@
 
 export type SignalingEvent =
   | { type: "open" }
-  | { type: "joined"; peers: number; initiator: boolean }
-  | { type: "peer-joined" }
-  | { type: "peer-left" }
-  | { type: "signal"; data: unknown }
+  // `self` is this peer's id; `peers` are ids already in the room; `capacity` is the
+  // room's max occupancy (2 for 1:1, up to 4 for group sharing).
+  | { type: "joined"; self: string; peers: string[]; capacity: number }
+  | { type: "peer-joined"; peerId: string }
+  | { type: "peer-left"; peerId: string }
+  | { type: "signal"; from: string; data: unknown }
   | { type: "room-full" }
   | { type: "error"; reason?: string }
   | { type: "close" };
@@ -28,6 +30,7 @@ export class SignalingClient {
   private ws: WebSocket | null = null;
   private listeners = new Set<Listener>();
   private room: string | null = null;
+  private maxPeers = 2;
   private closedByUs = false;
   private reconnectAttempts = 0;
   private readonly url: string;
@@ -60,7 +63,7 @@ export class SignalingClient {
       this.reconnectAttempts = 0;
       this.emit({ type: "open" });
       // If we were already in a room (reconnect case), re-join it.
-      if (this.room) this.send({ type: "join", room: this.room });
+      if (this.room) this.send({ type: "join", room: this.room, maxPeers: this.maxPeers });
     };
 
     this.ws.onmessage = (ev) => {
@@ -72,16 +75,21 @@ export class SignalingClient {
       }
       switch (msg.type) {
         case "joined":
-          this.emit({ type: "joined", peers: msg.peers, initiator: !!msg.initiator });
+          this.emit({
+            type: "joined",
+            self: msg.self,
+            peers: Array.isArray(msg.peers) ? msg.peers : [],
+            capacity: msg.capacity ?? 2,
+          });
           break;
         case "peer-joined":
-          this.emit({ type: "peer-joined" });
+          this.emit({ type: "peer-joined", peerId: msg.peerId });
           break;
         case "peer-left":
-          this.emit({ type: "peer-left" });
+          this.emit({ type: "peer-left", peerId: msg.peerId });
           break;
         case "signal":
-          this.emit({ type: "signal", data: msg.data });
+          this.emit({ type: "signal", from: msg.from, data: msg.data });
           break;
         case "room-full":
           this.emit({ type: "room-full" });
@@ -106,14 +114,16 @@ export class SignalingClient {
     };
   }
 
-  join(room: string) {
+  /** Join a room. `maxPeers` (2..4) only takes effect for the first/host joiner. */
+  join(room: string, maxPeers = 2) {
     this.room = room;
-    this.send({ type: "join", room });
+    this.maxPeers = maxPeers;
+    this.send({ type: "join", room, maxPeers });
   }
 
-  /** Relay a handshake blob (SDP/ICE) to the other peer. */
-  signal(data: unknown) {
-    this.send({ type: "signal", data });
+  /** Relay a handshake blob (SDP/ICE) to ONE specific peer in the room. */
+  signal(to: string, data: unknown) {
+    this.send({ type: "signal", to, data });
   }
 
   private send(obj: unknown) {

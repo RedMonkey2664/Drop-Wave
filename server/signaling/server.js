@@ -23,18 +23,27 @@
  */
 
 const http = require("http");
+const { randomUUID } = require("crypto");
 const { WebSocketServer } = require("ws");
 
 const PORT = process.env.SIGNALING_PORT || process.env.PORT || 8080;
 
-// Max peers per room. P2P pairing is 1:1, so 2 is the cap; the third is rejected.
-const MAX_PEERS_PER_ROOM = 2;
+// Hard cap on peers per room. Standard 1:1 sharing uses 2; "group sharing" lets the
+// room's host raise this up to 4. Beyond a full mesh of 4 the N² connections get
+// expensive in a browser, so 4 is the ceiling.
+const HARD_MAX_PEERS = 4;
+const DEFAULT_PEERS = 2;
 // Drop a connection that never joins a room within this window (anti-abuse).
 const JOIN_GRACE_MS = 30_000;
 // Heartbeat: terminate sockets that stop responding to pings.
 const HEARTBEAT_MS = 30_000;
 
-/** @type {Map<string, Set<import('ws').WebSocket>>} roomCode -> peers */
+/**
+ * roomCode -> { peers: Map<peerId, ws>, capacity }. Every peer gets a stable id so the
+ * server can route a handshake blob to ONE specific peer — a full mesh needs targeted
+ * routing, not a broadcast. `capacity` is fixed by the first peer to join (the host).
+ * @type {Map<string, { peers: Map<string, import('ws').WebSocket>, capacity: number }>}
+ */
 const rooms = new Map();
 
 // A tiny health endpoint so platforms can health-check the deploy.
@@ -61,25 +70,24 @@ function send(ws, msg) {
   if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg));
 }
 
-function peersInRoom(roomCode) {
-  return rooms.get(roomCode) ?? new Set();
-}
-
 function leaveRoom(ws) {
   const { roomCode } = ws;
   if (!roomCode) return;
-  const peers = rooms.get(roomCode);
-  if (!peers) return;
-  peers.delete(ws);
-  // Tell the remaining peer their partner left so it can reset its UI.
-  for (const peer of peers) send(peer, { type: "peer-left" });
-  if (peers.size === 0) rooms.delete(roomCode);
+  const room = rooms.get(roomCode);
+  if (!room) return;
+  room.peers.delete(ws.peerId);
+  // Tell every remaining peer which id left so they tear down that one mesh edge.
+  for (const peer of room.peers.values()) {
+    send(peer, { type: "peer-left", peerId: ws.peerId });
+  }
+  if (room.peers.size === 0) rooms.delete(roomCode);
   ws.roomCode = null;
 }
 
 wss.on("connection", (ws) => {
   ws.isAlive = true;
   ws.roomCode = null;
+  ws.peerId = randomUUID();
 
   // Abuse guard: a socket that never joins is dropped.
   const joinTimer = setTimeout(() => {
@@ -103,40 +111,48 @@ wss.on("connection", (ws) => {
         const roomCode = String(msg.room || "").trim().toUpperCase();
         if (!roomCode) return send(ws, { type: "error", reason: "no-room" });
 
-        const peers = rooms.get(roomCode) ?? new Set();
-        if (peers.size >= MAX_PEERS_PER_ROOM && !peers.has(ws)) {
+        let room = rooms.get(roomCode);
+        if (!room) {
+          // First joiner (the host) fixes the room capacity within [2, HARD_MAX_PEERS].
+          const requested = Number(msg.maxPeers) || DEFAULT_PEERS;
+          const capacity = Math.min(Math.max(requested, 2), HARD_MAX_PEERS);
+          room = { peers: new Map(), capacity };
+          rooms.set(roomCode, room);
+        }
+
+        if (!room.peers.has(ws.peerId) && room.peers.size >= room.capacity) {
           return send(ws, { type: "room-full", room: roomCode });
         }
 
         clearTimeout(joinTimer);
         ws.roomCode = roomCode;
-        peers.add(ws);
-        rooms.set(roomCode, peers);
+        room.peers.set(ws.peerId, ws);
 
-        // The joining peer learns whether someone is already waiting. The peer that
-        // arrives second is the "initiator" — it kicks off the WebRTC offer.
-        const otherCount = peers.size - 1;
+        // The joiner learns its own id + the ids already present. In the mesh, the
+        // NEWCOMER is the initiator toward every existing peer; existing peers answer.
+        const others = [...room.peers.keys()].filter((id) => id !== ws.peerId);
         send(ws, {
           type: "joined",
           room: roomCode,
-          peers: otherCount,
-          initiator: otherCount > 0,
+          self: ws.peerId,
+          peers: others,
+          capacity: room.capacity,
         });
-        // Notify the peer already in the room that a partner arrived.
-        for (const peer of peers) {
-          if (peer !== ws) send(peer, { type: "peer-joined" });
+        // Notify everyone already in the room that a new peer (by id) arrived.
+        for (const [id, peer] of room.peers) {
+          if (id !== ws.peerId) send(peer, { type: "peer-joined", peerId: ws.peerId });
         }
         return;
       }
 
-      // SDP offer/answer and ICE candidates are relayed verbatim to the OTHER peer(s)
-      // in the room. The server does not parse or store them.
+      // SDP offer/answer and ICE candidates are routed to ONE target peer (msg.to),
+      // tagged with the sender's id. The server does not parse or store them.
       case "signal": {
         if (!ws.roomCode) return send(ws, { type: "error", reason: "not-joined" });
-        const peers = peersInRoom(ws.roomCode);
-        for (const peer of peers) {
-          if (peer !== ws) send(peer, { type: "signal", data: msg.data });
-        }
+        const room = rooms.get(ws.roomCode);
+        if (!room) return;
+        const target = room.peers.get(msg.to);
+        if (target) send(target, { type: "signal", from: ws.peerId, data: msg.data });
         return;
       }
 

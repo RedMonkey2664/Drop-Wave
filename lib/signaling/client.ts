@@ -219,8 +219,14 @@ export function getIceServers(): RTCIceServer[] {
 export async function resolveIceServers(): Promise<RTCIceServer[]> {
   const servers = getIceServers();
 
-  const subdomain = process.env.NEXT_PUBLIC_METERED_SUBDOMAIN;
-  const apiKey = process.env.NEXT_PUBLIC_METERED_API_KEY;
+  // Defaults make cross-network TURN work out of the box; env vars override them.
+  // This is a Metered (metered.ca) free-tier app key — a CLIENT key by design (it
+  // already ships in the browser bundle), rate-limited to the free quota, and
+  // rotatable/deletable from the Metered dashboard at any time.
+  const subdomain = process.env.NEXT_PUBLIC_METERED_SUBDOMAIN || "dropwave";
+  const apiKey =
+    process.env.NEXT_PUBLIC_METERED_API_KEY ||
+    "0291aa6ec0f479e9e1e55c93a18f101ca035";
   if (!subdomain || !apiKey || typeof fetch === "undefined") return servers;
 
   try {

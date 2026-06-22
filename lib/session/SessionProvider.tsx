@@ -29,7 +29,11 @@ import {
   useRef,
   useState,
 } from "react";
-import { SignalingClient, getSignalingUrl } from "@/lib/signaling/client";
+import {
+  SignalingClient,
+  getSignalingUrl,
+  resolveIceServers,
+} from "@/lib/signaling/client";
 import { Peer, isWebRTCSupported } from "@/lib/webrtc/peer";
 import {
   FileReceiver,
@@ -116,6 +120,10 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const signalingRef = useRef<SignalingClient | null>(null);
   const selfIdRef = useRef<string | null>(null);
   const capacityRef = useRef(2);
+  // Resolved once per session (STUN + optional TURN) and shared by every mesh edge.
+  const iceServersRef = useRef<RTCIceServer[] | undefined>(undefined);
+  // Bumped on every start/teardown to cancel a superseded async ICE resolution.
+  const startTokenRef = useRef(0);
 
   // Mesh: one Peer (+ sender/receiver/send-chain) per remote peer id.
   const peersRef = useRef<Map<string, Peer>>(new Map());
@@ -270,10 +278,13 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const teardown = useCallback(() => {
+    // Invalidate any in-flight ICE resolution so its .then() can't revive a dead session.
+    startTokenRef.current++;
     for (const id of [...peersRef.current.keys()]) destroyPeer(id);
     signalingRef.current?.close();
     signalingRef.current = null;
     selfIdRef.current = null;
+    iceServersRef.current = undefined;
     outgoingQueueRef.current = [];
     outAggRef.current.clear();
     outTargetsRef.current.clear();
@@ -298,6 +309,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
 
       const peer = new Peer({
         initiator,
+        iceServers: iceServersRef.current,
         sendSignal: (payload) => signaling.signal(remoteId, payload),
         events: {
           onConnectionStateChange: (cs) => {
@@ -366,11 +378,28 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       }
 
       teardown();
+      const token = ++startTokenRef.current;
       capacityRef.current = maxPeers;
-      const signaling = new SignalingClient({ url: getSignalingUrl() });
-      signalingRef.current = signaling;
 
-      signaling.on((ev) => {
+      // Show the room/QR immediately; the connection waits on ICE resolution (fast).
+      setState((s) => ({
+        ...s,
+        phase: "pairing",
+        role,
+        roomCode: room,
+        capacity: maxPeers,
+        error: null,
+      }));
+
+      void resolveIceServers().then((servers) => {
+        // A reset/new session happened during the fetch — abandon this one.
+        if (startTokenRef.current !== token) return;
+        iceServersRef.current = servers;
+
+        const signaling = new SignalingClient({ url: getSignalingUrl() });
+        signalingRef.current = signaling;
+
+        signaling.on((ev) => {
         switch (ev.type) {
           case "open":
             signaling.join(room, capacityRef.current);
@@ -414,17 +443,10 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
           case "error":
             break;
         }
-      });
+        });
 
-      setState((s) => ({
-        ...s,
-        phase: "pairing",
-        role,
-        roomCode: room,
-        capacity: maxPeers,
-        error: null,
-      }));
-      signaling.connect();
+        signaling.connect();
+      });
     },
     [createPeer, destroyPeer, syncPeerState, teardown]
   );

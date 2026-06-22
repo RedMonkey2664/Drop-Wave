@@ -194,3 +194,35 @@ export function getIceServers(): RTCIceServer[] {
 
   return servers;
 }
+
+/**
+ * Async ICE resolution. Returns the static servers from getIceServers() and, if a
+ * Metered (metered.ca) API key is configured, ALSO fetches fresh, rotating TURN
+ * credentials from its REST endpoint and merges them in. Dynamic creds are preferable
+ * to hardcoded ones (they rotate and don't go stale), but everything degrades
+ * gracefully: if the fetch fails we still return STUN + any static TURN.
+ *
+ *   NEXT_PUBLIC_METERED_SUBDOMAIN=yourname   (the "<sub>.metered.live" prefix)
+ *   NEXT_PUBLIC_METERED_API_KEY=...          (the app's API key; client-safe)
+ *
+ * Resolved once per session in SessionProvider and passed to every Peer.
+ */
+export async function resolveIceServers(): Promise<RTCIceServer[]> {
+  const servers = getIceServers();
+
+  const subdomain = process.env.NEXT_PUBLIC_METERED_SUBDOMAIN;
+  const apiKey = process.env.NEXT_PUBLIC_METERED_API_KEY;
+  if (!subdomain || !apiKey || typeof fetch === "undefined") return servers;
+
+  try {
+    const res = await fetch(
+      `https://${subdomain}.metered.live/api/v1/turn/credentials?apiKey=${encodeURIComponent(apiKey)}`
+    );
+    if (!res.ok) return servers;
+    const dynamic = (await res.json()) as RTCIceServer[];
+    if (Array.isArray(dynamic) && dynamic.length > 0) return [...servers, ...dynamic];
+  } catch {
+    // Network/credential error — fall back to the static set.
+  }
+  return servers;
+}

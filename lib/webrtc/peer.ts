@@ -48,12 +48,14 @@ export class Peer {
     initiator: boolean;
     sendSignal: (payload: SignalPayload) => void;
     events?: PeerEvents;
+    /** Pre-resolved ICE servers (STUN + optional TURN). Falls back to STUN defaults. */
+    iceServers?: RTCIceServer[];
   }) {
     this.isInitiator = opts.initiator;
     this.sendSignal = opts.sendSignal;
     this.events = opts.events ?? {};
 
-    this.pc = new RTCPeerConnection({ iceServers: getIceServers() });
+    this.pc = new RTCPeerConnection({ iceServers: opts.iceServers ?? getIceServers() });
 
     this.pc.onicecandidate = (ev) => {
       // A null candidate signals end-of-candidates; nothing to relay.

@@ -179,7 +179,16 @@ export function getIceServers(): RTCIceServer[] {
 
   const stunUrls = process.env.NEXT_PUBLIC_STUN_URLS
     ? splitUrls(process.env.NEXT_PUBLIC_STUN_URLS)
-    : ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"];
+    : [
+        // Several public STUN servers — more reflexive candidates = better odds of a
+        // direct cross-network connection before falling back to a TURN relay.
+        "stun:stun.l.google.com:19302",
+        "stun:stun1.l.google.com:19302",
+        "stun:stun2.l.google.com:19302",
+        "stun:stun3.l.google.com:19302",
+        "stun:stun4.l.google.com:19302",
+        "stun:stun.cloudflare.com:3478",
+      ];
 
   const servers: RTCIceServer[] = [{ urls: stunUrls }];
 

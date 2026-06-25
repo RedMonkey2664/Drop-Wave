@@ -2,8 +2,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { motion as m } from "framer-motion";
-import { ArrowRight, FileUp, Users } from "lucide-react";
+import { AnimatePresence, motion as m } from "framer-motion";
+import { ArrowRight, FileUp, Plus, Users } from "lucide-react";
 import { Header } from "@/components/ui/Header";
 import { Card } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
@@ -22,6 +22,8 @@ export default function SendPage() {
   const session = useSession();
   const [selected, setSelected] = useState<File[]>([]);
   const [groupOn, setGroupOn] = useState(false);
+  // Step-2 "add more" picker (stack more batches onto this same session before/while pairing).
+  const [addingMore, setAddingMore] = useState(false);
   // After a while waiting for a device, surface a hint instead of waiting silently.
   const [slow, setSlow] = useState(false);
 
@@ -162,6 +164,39 @@ export default function SendPage() {
           </span>
           <span className="font-mono text-text-muted">{formatBytes(totalBytes)}</span>
         </m.div>
+
+        {/* Add more files to this same share — no re-pairing. Lets you stack batches
+            (e.g. several swipes of videos from the iPhone Photos grid) up to any count. */}
+        <div className="mt-4 w-full">
+          <AnimatePresence mode="wait">
+            {addingMore ? (
+              <m.div
+                key="more-picker"
+                initial={{ opacity: 0, y: 12 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 12 }}
+              >
+                <FilePicker
+                  onFiles={(files) => {
+                    handleFiles(files);
+                    setAddingMore(false);
+                  }}
+                />
+              </m.div>
+            ) : (
+              <m.div key="more-btn" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+                <Button
+                  variant="secondary"
+                  size="lg"
+                  className="w-full"
+                  onClick={() => setAddingMore(true)}
+                >
+                  <Plus size={18} /> Add more files
+                </Button>
+              </m.div>
+            )}
+          </AnimatePresence>
+        </div>
 
         {slow && (
           <p className="mt-4 max-w-sm text-center text-sm text-text-muted">

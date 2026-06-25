@@ -63,6 +63,19 @@ auto-discovery.
 It cannot see file names or bytes. Once the channel opens it's out of the loop entirely.
 WebRTC DataChannels are encrypted (DTLS) by default.
 
+### Local Wi-Fi mode (high speed, optional)
+
+Flip on **Local Wi-Fi** before pairing (a toggle on Send, mirrored on Receive) to force a
+**STUN-only, no-relay** connection. When both devices are on the same network the path
+becomes a direct host-to-host LAN link — the **fastest** possible and bytes never leave
+your network. It's off by default so cross-network sharing keeps working out of the box;
+when on, the QR link carries the setting so the scanning device matches it automatically —
+no second toggle. Once connected, the transfer screen shows a live badge of the real
+transport — **⚡ Local Wi-Fi · high speed** (same-LAN), **Direct P2P** (direct via STUN),
+or **Relayed** — read straight from the negotiated ICE candidate pair, so the speed claim
+is never just marketing. If Local mode can't find a direct path (devices on different
+networks), it says so and tells you to turn it off to allow a relay.
+
 ---
 
 ## Tech stack

@@ -155,6 +155,50 @@ export class Peer {
     return this.pc.connectionState;
   }
 
+  /**
+   * Inspect the negotiated ICE candidate pair to classify the live transport:
+   *   • "local"  — both ends are host candidates → same LAN, no internet hop (fastest).
+   *   • "direct" — a direct P2P path via reflexive candidates (still no relay).
+   *   • "relay"  — traffic is going through a TURN relay server (slowest, costs bandwidth).
+   * Returns null until a pair is selected. Drives the "Local Wi-Fi · high speed" badge.
+   */
+  async getLinkType(): Promise<"local" | "direct" | "relay" | null> {
+    try {
+      const stats = await this.pc.getStats();
+
+      // Prefer the transport's explicit selected-pair pointer; fall back to scanning
+      // candidate-pairs for the nominated/succeeded one (browsers differ on what they set).
+      let selected: any = null;
+      stats.forEach((r: any) => {
+        if (r.type === "transport" && r.selectedCandidatePairId) {
+          selected = stats.get(r.selectedCandidatePairId) ?? selected;
+        }
+      });
+      if (!selected) {
+        stats.forEach((r: any) => {
+          if (
+            r.type === "candidate-pair" &&
+            (r.selected || (r.nominated && r.state === "succeeded"))
+          ) {
+            selected = r;
+          }
+        });
+      }
+      if (!selected) return null;
+
+      const local: any = stats.get(selected.localCandidateId);
+      const remote: any = stats.get(selected.remoteCandidateId);
+      const lt = local?.candidateType;
+      const rt = remote?.candidateType;
+
+      if (lt === "relay" || rt === "relay") return "relay";
+      if (lt === "host" && rt === "host") return "local";
+      return "direct";
+    } catch {
+      return null;
+    }
+  }
+
   destroy() {
     this.destroyed = true;
     try {

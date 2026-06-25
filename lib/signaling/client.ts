@@ -216,8 +216,23 @@ export function getIceServers(): RTCIceServer[] {
  *
  * Resolved once per session in SessionProvider and passed to every Peer.
  */
-export async function resolveIceServers(): Promise<RTCIceServer[]> {
+export async function resolveIceServers(opts?: {
+  /**
+   * Local Wi-Fi mode. Return STUN-only servers — NEVER a TURN relay — so the connection
+   * is forced onto a direct path. On the same Wi-Fi that path is the local host-to-host
+   * link (fastest possible, and bytes never leave the network). We also skip the Metered
+   * TURN fetch entirely, so there's nothing to wait on and no relay to fall back to.
+   */
+  localOnly?: boolean;
+}): Promise<RTCIceServer[]> {
   const servers = getIceServers();
+
+  if (opts?.localOnly) {
+    return servers.filter((s) => {
+      const urls = Array.isArray(s.urls) ? s.urls : [s.urls];
+      return urls.every((u) => u.startsWith("stun:"));
+    });
+  }
 
   // Defaults make cross-network TURN work out of the box; env vars override them.
   // This is a Metered (metered.ca) free-tier app key — a CLIENT key by design (it

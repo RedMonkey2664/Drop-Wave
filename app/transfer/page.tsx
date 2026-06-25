@@ -14,6 +14,7 @@ import {
   Users,
   Wifi,
   WifiOff,
+  Zap,
 } from "lucide-react";
 import { Header } from "@/components/ui/Header";
 import { Card } from "@/components/ui/Card";
@@ -121,6 +122,20 @@ export default function TransferPage() {
               <Badge tone="error">
                 <WifiOff size={13} /> Disconnected
               </Badge>
+            )}
+            {/* Live transport class — shows you actually got the fast local path. */}
+            {connected && session.linkType === "local" && (
+              <Badge tone="success">
+                <Zap size={12} /> Local Wi-Fi · high speed
+              </Badge>
+            )}
+            {connected && session.linkType === "direct" && (
+              <Badge tone="aqua">
+                <Zap size={12} /> Direct P2P
+              </Badge>
+            )}
+            {connected && session.linkType === "relay" && (
+              <Badge tone="warning">Relayed</Badge>
             )}
             <span className="font-mono text-xs text-text-muted">
               room {session.roomCode}

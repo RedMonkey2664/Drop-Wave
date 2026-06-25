@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { QRScanner } from "@/components/pairing/QRScanner";
 import { RoomCodeEntry } from "@/components/pairing/RoomCode";
+import { LocalModeToggle } from "@/components/pairing/LocalModeToggle";
 import { Splash } from "@/components/motion/Splash";
 import { Radar } from "@/components/motion/Radar";
 import { UnsupportedNotice } from "@/components/shared/UnsupportedNotice";
@@ -33,6 +34,10 @@ function ReceiveInner() {
   const session = useSession();
   const params = useSearchParams();
   const presetRoom = params.get("room");
+  const presetLocal = params.get("local") === "1";
+
+  // Manual joiners can opt into Local Wi-Fi; a scanned link pre-sets it from the sender.
+  const [localOn, setLocalOn] = useState(presetLocal);
 
   // "scan" (camera), "code" (manual entry), or "connecting".
   const [mode, setMode] = useState<"scan" | "code" | "connecting">(
@@ -45,7 +50,7 @@ function ReceiveInner() {
   // Auto-join when arriving from a scanned QR link (?room=CODE).
   useEffect(() => {
     if (presetRoom && session.phase === "idle") {
-      session.join(presetRoom);
+      session.join(presetRoom, { local: presetLocal });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [presetRoom]);
@@ -69,7 +74,7 @@ function ReceiveInner() {
 
   function connect(code: string) {
     setMode("connecting");
-    session.join(code);
+    session.join(code, { local: localOn });
   }
 
   if (!session.supported) {
@@ -171,6 +176,11 @@ function ReceiveInner() {
           </button>
         </div>
       )}
+
+      {/* Local Wi-Fi opt-in for manual joiners (a scanned link sets this automatically). */}
+      <div className="mt-6 w-full">
+        <LocalModeToggle on={localOn} onChange={setLocalOn} />
+      </div>
     </div>
   );
 }

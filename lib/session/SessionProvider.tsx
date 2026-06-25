@@ -76,13 +76,24 @@ interface SessionState {
   canSaveToDisk: boolean;
   /** Set once the receiver picks a destination folder for streamed-to-disk files. */
   saveFolderName: string | null;
+  /** "Local Wi-Fi" mode: force a STUN-only, no-relay connection (LAN speed + privacy). */
+  localMode: boolean;
+  /**
+   * The live transport class once connected (from ICE stats):
+   *   "local"  — same-LAN host-to-host (fastest), "direct" — direct P2P via STUN,
+   *   "relay"  — going through a TURN relay. null until known.
+   */
+  linkType: "local" | "direct" | "relay" | null;
 }
 
 interface SessionApi extends SessionState {
   supported: boolean;
-  /** Create a room. `maxPeers` 2 (1:1) or up to 4 (group sharing). Returns the code. */
-  host: (maxPeers?: number) => string;
-  join: (code: string) => void;
+  /**
+   * Create a room. `maxPeers` 2 (1:1) or up to 4 (group sharing). `local` opts into
+   * Local Wi-Fi mode (no relay). Returns the code.
+   */
+  host: (maxPeers?: number, opts?: { local?: boolean }) => string;
+  join: (code: string, opts?: { local?: boolean }) => void;
   sendFiles: (files: File[]) => void;
   cancelOutgoing: (id?: string) => void;
   clearReceived: () => void;
@@ -119,6 +130,8 @@ const initialState: SessionState = {
   connectNonce: 0,
   canSaveToDisk: false,
   saveFolderName: null,
+  localMode: false,
+  linkType: null,
 };
 
 /** One outgoing file we've chosen to share this session (id is stable across peers). */
@@ -134,6 +147,8 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const signalingRef = useRef<SignalingClient | null>(null);
   const selfIdRef = useRef<string | null>(null);
   const capacityRef = useRef(2);
+  // Local Wi-Fi mode for the current session (STUN-only, no TURN relay).
+  const localModeRef = useRef(false);
   // Resolved once per session (STUN + optional TURN) and shared by every mesh edge.
   const iceServersRef = useRef<RTCIceServer[] | undefined>(undefined);
   // Bumped on every start/teardown to cancel a superseded async ICE resolution.
@@ -284,6 +299,23 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     [mergeOutgoing]
   );
 
+  // Poll a freshly-connected peer's ICE stats until the selected candidate pair is known,
+  // then surface whether the live path is local / direct / relayed (drives the badge).
+  const probeLinkType = useCallback((peerId: string) => {
+    let tries = 0;
+    const tick = async () => {
+      const peer = peersRef.current.get(peerId);
+      if (!peer || !openChannelsRef.current.has(peerId)) return;
+      const t = await peer.getLinkType();
+      if (t) {
+        setState((s) => ({ ...s, linkType: t }));
+        return;
+      }
+      if (++tries < 12) setTimeout(tick, 600);
+    };
+    void tick();
+  }, []);
+
   // ── derived state recompute (peer counts / phase) ─────────────────────────────
   const syncPeerState = useCallback(() => {
     const known = peersRef.current.size;
@@ -322,6 +354,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     signalingRef.current = null;
     selfIdRef.current = null;
     iceServersRef.current = undefined;
+    localModeRef.current = false;
     outgoingQueueRef.current = [];
     outAggRef.current.clear();
     outTargetsRef.current.clear();
@@ -359,8 +392,9 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
                 phase: "error",
                 error: {
                   code: "connection-failed",
-                  message:
-                    "Could not establish a direct connection. Try the same Wi-Fi, or re-pair.",
+                  message: localModeRef.current
+                    ? "Local Wi-Fi mode couldn't find a direct path — the devices may be on different networks. Turn off Local Wi-Fi to allow an internet relay, then re-pair."
+                    : "Could not establish a direct connection. Try the same Wi-Fi, or re-pair.",
                 },
               }));
             }
@@ -383,6 +417,8 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
             openChannelsRef.current.add(remoteId);
             setState((s) => ({ ...s, error: null, connectNonce: s.connectNonce + 1 }));
             syncPeerState();
+            // Detect the live transport (local / direct / relay) for the speed badge.
+            probeLinkType(remoteId);
             // Deliver everything shared so far to this newly-open peer.
             deliverToPeer(remoteId, outgoingQueueRef.current);
           },
@@ -399,12 +435,17 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       if (initiator) void peer.start();
       return peer;
     },
-    [deliverToPeer, mergeIncoming, syncPeerState, uniqueName]
+    [deliverToPeer, mergeIncoming, probeLinkType, syncPeerState, uniqueName]
   );
 
   // ── signaling wiring ──────────────────────────────────────────────────────────
   const startSignaling = useCallback(
-    (room: string, role: Exclude<SessionRole, null>, maxPeers: number) => {
+    (
+      room: string,
+      role: Exclude<SessionRole, null>,
+      maxPeers: number,
+      localOnly: boolean
+    ) => {
       if (!isWebRTCSupported()) {
         supportedRef.current = false;
         setState((s) => ({
@@ -422,6 +463,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       teardown();
       const token = ++startTokenRef.current;
       capacityRef.current = maxPeers;
+      localModeRef.current = localOnly;
 
       // Show the room/QR immediately; the connection waits on ICE resolution (fast).
       setState((s) => ({
@@ -430,10 +472,12 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
         role,
         roomCode: room,
         capacity: maxPeers,
+        localMode: localOnly,
+        linkType: null,
         error: null,
       }));
 
-      void resolveIceServers().then((servers) => {
+      void resolveIceServers({ localOnly }).then((servers) => {
         // A reset/new session happened during the fetch — abandon this one.
         if (startTokenRef.current !== token) return;
         iceServersRef.current = servers;
@@ -494,20 +538,20 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   );
 
   const host = useCallback(
-    (maxPeers = 2): string => {
+    (maxPeers = 2, opts?: { local?: boolean }): string => {
       const code = generateRoomCode();
-      startSignaling(code, "host", Math.min(Math.max(maxPeers, 2), 4));
+      startSignaling(code, "host", Math.min(Math.max(maxPeers, 2), 4), !!opts?.local);
       return code;
     },
     [startSignaling]
   );
 
   const join = useCallback(
-    (code: string) => {
+    (code: string, opts?: { local?: boolean }) => {
       const normalized = normalizeRoomCode(code);
       if (!normalized) return;
       // Guests don't set capacity; the host's value wins server-side.
-      startSignaling(normalized, "guest", 4);
+      startSignaling(normalized, "guest", 4, !!opts?.local);
     },
     [startSignaling]
   );

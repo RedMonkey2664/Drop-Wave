@@ -12,20 +12,25 @@
  */
 
 /**
- * Chunk size. 16 KiB is the cross-browser-safe SCTP message size (older WebRTC stacks,
- * including some iOS Safari versions, choke above this). Larger is faster but riskier;
- * we trade a little speed for "works iPhone ↔ Windows" reliability — the whole point.
+ * Chunk size. 16 KiB is the cross-browser-safe SCTP floor (older stacks, incl. some iOS
+ * Safari versions, choke above it). But on capable peers, bigger chunks mean far less
+ * per-message overhead — decisive when moving 100 GB across thousands of files. So this
+ * is the FLOOR/fallback; the sender negotiates the real size up from the channel's
+ * SCTP `maxMessageSize` (see CHUNK_SIZE_MIN/MAX and FileSender), clamped to a value
+ * every modern browser handles. We never go below CHUNK_SIZE so iOS Safari stays happy.
  */
 export const CHUNK_SIZE = 16 * 1024;
+export const CHUNK_SIZE_MIN = 16 * 1024; // 16 KiB — iOS-Safari-safe floor
+export const CHUNK_SIZE_MAX = 256 * 1024; // 256 KiB — fast, still widely supported
+export const CHUNK_SIZE_TARGET = 64 * 1024; // used when maxMessageSize is unknown
 
 /**
- * Backpressure thresholds for channel.bufferedAmount. We pause feeding the channel
- * when the send buffer exceeds HIGH_WATER and resume (via the `bufferedamountlow`
- * event) when it drains below LOW_WATER. This keeps memory bounded and the UI smooth
- * even for multi-GB files.
+ * Backpressure thresholds for channel.bufferedAmount. We stop feeding the channel above
+ * HIGH_WATER and resume (via `bufferedamountlow`) below LOW_WATER, keeping memory bounded
+ * and the UI smooth even across 100 GB. Raised for higher sustained desktop throughput.
  */
-export const BUFFER_HIGH_WATER = 8 * 1024 * 1024; // 8 MB
-export const BUFFER_LOW_WATER = 1 * 1024 * 1024; // 1 MB
+export const BUFFER_HIGH_WATER = 16 * 1024 * 1024; // 16 MB
+export const BUFFER_LOW_WATER = 4 * 1024 * 1024; // 4 MB
 
 export interface FileMeta {
   id: string;

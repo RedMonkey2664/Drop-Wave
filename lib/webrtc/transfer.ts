@@ -1,23 +1,28 @@
 /**
  * transfer.ts — chunked file transfer over an open DataChannel.
  *
- * Sender side: reads each File chunk-by-chunk via Blob.slice (never loads the whole
- * file into memory), respects DataChannel backpressure (bufferedAmount), and emits
- * progress. Receiver side: reassembles chunks into a Blob per file and emits progress.
+ * Sender: reads each File chunk-by-chunk via Blob.slice (never loads the whole file into
+ * memory), respects DataChannel backpressure (bufferedAmount), negotiates the largest safe
+ * chunk size from the channel, and emits progress.
  *
- * Memory + UI safety (CLAUDE.md "very large files must not freeze the UI"):
- *   • We slice + read one chunk at a time and `await` it, yielding to the event loop
- *     so animations keep running at 60fps during transfer.
- *   • Backpressure caps the send buffer (BUFFER_HIGH_WATER) so RAM stays bounded.
- *   • The receiver keeps an array of ArrayBuffers and only materializes a Blob at
- *     file-end — Blobs reference their parts without a giant copy, and this path works
- *     on iOS Safari (which lacks the File System Access API for streaming-to-disk).
+ * Receiver: routes each file's chunks into a pluggable SINK:
+ *   • DiskSink   — streams chunks straight to a file on disk via the File System Access
+ *                  API (a WritableFileStream). Memory stays bounded no matter the size, so
+ *                  100 files × 1 GB (100 GB+) is possible. Desktop Chromium/Edge.
+ *   • MemorySink — collects chunks into a Blob + object URL (the universal fallback; used on
+ *                  iOS Safari / Firefox which lack the File System Access API, and for small
+ *                  transfers where holding the file in RAM is fine).
+ *
+ * Memory + UI safety: chunks are read/written one at a time with `await`, yielding to the
+ * event loop so animations stay at 60fps; backpressure caps the send buffer.
  */
 
 import {
   BUFFER_HIGH_WATER,
   BUFFER_LOW_WATER,
-  CHUNK_SIZE,
+  CHUNK_SIZE_MAX,
+  CHUNK_SIZE_MIN,
+  CHUNK_SIZE_TARGET,
   ControlMessage,
   decodeControl,
   encodeControl,
@@ -43,8 +48,90 @@ export interface ReceivedFile {
   name: string;
   size: number;
   type: string;
-  blob: Blob;
-  url: string;
+  /** Present only for in-memory (MemorySink) files; absent when streamed to disk. */
+  blob?: Blob;
+  url?: string;
+  /** True when the file was streamed straight to a folder on disk. */
+  savedToDisk?: boolean;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SINKS — where received bytes land
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface ChunkSink {
+  /** Enqueue a chunk (non-blocking; writes are serialized internally). */
+  write(chunk: ArrayBuffer): void;
+  /** Flush + finalize. Resolves with how the file can be accessed afterward. */
+  close(): Promise<{ blob?: Blob; url?: string; savedToDisk: boolean }>;
+  /** Tear down without finalizing (cancel). */
+  abort(): Promise<void>;
+}
+
+/** Collects chunks in memory and materializes a Blob + object URL at close. */
+class MemorySink implements ChunkSink {
+  private chunks: ArrayBuffer[] = [];
+  constructor(private type: string) {}
+  write(chunk: ArrayBuffer) {
+    this.chunks.push(chunk);
+  }
+  async close() {
+    const blob = new Blob(this.chunks, { type: this.type || "application/octet-stream" });
+    this.chunks = [];
+    return { blob, url: URL.createObjectURL(blob), savedToDisk: false as const };
+  }
+  async abort() {
+    this.chunks = [];
+  }
+}
+
+/**
+ * Streams chunks directly to a file on disk. Writes are chained off a single promise so
+ * they stay ordered and bounded — only the not-yet-flushed tail sits in memory (disk
+ * throughput on an SSD far exceeds typical WebRTC throughput, so that tail stays tiny).
+ */
+class DiskSink implements ChunkSink {
+  private chain: Promise<unknown>;
+  private writable: any = null;
+  constructor(dirHandle: any, fileName: string) {
+    this.chain = (async () => {
+      const handle = await dirHandle.getFileHandle(fileName, { create: true });
+      this.writable = await handle.createWritable();
+    })();
+  }
+  write(chunk: ArrayBuffer) {
+    this.chain = this.chain.then(() => this.writable.write(chunk));
+  }
+  async close() {
+    await this.chain;
+    await this.writable.close();
+    return { savedToDisk: true as const };
+  }
+  async abort() {
+    try {
+      await this.chain;
+      await this.writable?.abort?.();
+    } catch {
+      /* best-effort */
+    }
+  }
+}
+
+export type SinkFactory = (meta: FileMeta) => ChunkSink;
+
+/** Build a sink for a file: disk-stream when a folder handle is set, else in-memory. */
+export function makeSink(
+  meta: FileMeta,
+  dirHandle: any | null,
+  uniqueName: (name: string) => string
+): ChunkSink {
+  if (dirHandle) return new DiskSink(dirHandle, uniqueName(meta.name));
+  return new MemorySink(meta.type);
+}
+
+/** True if this browser can stream downloads straight to a chosen folder. */
+export function canStreamToDisk(): boolean {
+  return typeof window !== "undefined" && "showDirectoryPicker" in window;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -54,12 +141,18 @@ export interface ReceivedFile {
 export class FileSender {
   private canceled = new Set<string>();
   private batchCanceled = false;
+  private readonly chunkSize: number;
 
   constructor(
     private channel: RTCDataChannel,
-    private onProgress: (u: ProgressUpdate) => void
+    private onProgress: (u: ProgressUpdate) => void,
+    /** Channel's negotiated SCTP maxMessageSize; we pick the biggest safe chunk from it. */
+    maxMessageSize = 0
   ) {
     this.channel.bufferedAmountLowThreshold = BUFFER_LOW_WATER;
+    const cap =
+      maxMessageSize > 0 ? Math.min(maxMessageSize, CHUNK_SIZE_MAX) : CHUNK_SIZE_TARGET;
+    this.chunkSize = Math.max(CHUNK_SIZE_MIN, cap);
   }
 
   cancel(id?: string) {
@@ -87,9 +180,9 @@ export class FileSender {
   /**
    * Send a batch of files sequentially. Resolves when all are sent (or canceled).
    *
-   * `providedMetas` lets the caller pre-assign each file's id so the SAME file fanned
-   * out to multiple peers shares one id — the session aggregates per-peer progress into
-   * a single "sending to the group" row. When omitted, ids are generated here.
+   * `providedMetas` lets the caller pre-assign each file's id so the SAME file fanned out
+   * to multiple peers shares one id — the session aggregates per-peer progress into a
+   * single row. When omitted, ids are generated here.
    */
   async sendFiles(files: File[], providedMetas?: FileMeta[]): Promise<void> {
     const metas: FileMeta[] =
@@ -121,13 +214,7 @@ export class FileSender {
     let lastBytes = 0;
     let speed = 0;
 
-    this.onProgress({
-      ...meta,
-      transferred: 0,
-      progress: 0,
-      speed: 0,
-      status: "active",
-    });
+    this.onProgress({ ...meta, transferred: 0, progress: 0, speed: 0, status: "active" });
 
     while (offset < file.size) {
       if (this.batchCanceled || this.canceled.has(meta.id)) {
@@ -143,7 +230,7 @@ export class FileSender {
 
       await this.waitForDrain();
 
-      const slice = file.slice(offset, offset + CHUNK_SIZE);
+      const slice = file.slice(offset, offset + this.chunkSize);
       const buf = await slice.arrayBuffer(); // async read — yields to the event loop
       this.send(buf);
 
@@ -185,7 +272,7 @@ export class FileSender {
 
 interface IncomingFile {
   meta: FileMeta;
-  chunks: ArrayBuffer[];
+  sink: ChunkSink;
   received: number;
   lastTime: number;
   lastBytes: number;
@@ -202,11 +289,16 @@ export interface ReceiverCallbacks {
 
 export class FileReceiver {
   private current: IncomingFile | null = null;
-  /** Ack channel back to the sender (optional but improves UX accuracy). */
   private ack: (msg: ControlMessage) => void;
+  private sinkFactory: SinkFactory;
 
-  constructor(private callbacks: ReceiverCallbacks, ackSend: (data: string) => void) {
+  constructor(
+    private callbacks: ReceiverCallbacks,
+    ackSend: (data: string) => void,
+    sinkFactory?: SinkFactory
+  ) {
     this.ack = (msg) => ackSend(encodeControl(msg));
+    this.sinkFactory = sinkFactory ?? ((meta) => new MemorySink(meta.type));
   }
 
   /** Feed every DataChannel message here; we route control vs. binary. */
@@ -223,7 +315,6 @@ export class FileReceiver {
     switch (msg.kind) {
       case "batch-start":
         this.callbacks.onBatchStart?.(msg.files, msg.totalBytes);
-        // Seed pending progress rows so the UI lists files immediately.
         for (const meta of msg.files) {
           this.callbacks.onProgress({
             ...meta,
@@ -237,7 +328,7 @@ export class FileReceiver {
       case "file-start":
         this.current = {
           meta: msg.meta,
-          chunks: [],
+          sink: this.sinkFactory(msg.meta),
           received: 0,
           lastTime: performance.now(),
           lastBytes: 0,
@@ -251,25 +342,30 @@ export class FileReceiver {
           status: "active",
         });
         break;
-      case "file-end":
-        this.finishCurrent();
+      case "file-end": {
+        // Swap out `current` synchronously so the next file-start can't race the async
+        // close(); finalize this file (flush sink → disk/blob) in the background.
+        const finishing = this.current;
+        this.current = null;
+        if (finishing) void this.finish(finishing);
         break;
+      }
       case "batch-complete":
         this.callbacks.onBatchComplete?.();
         this.ack({ kind: "batch-received" });
         break;
       case "cancel":
         if (this.current && (!msg.id || msg.id === this.current.meta.id)) {
+          const canceling = this.current;
+          this.current = null;
+          void canceling.sink.abort();
           this.callbacks.onProgress({
-            ...this.current.meta,
-            transferred: this.current.received,
-            progress: this.current.meta.size
-              ? this.current.received / this.current.meta.size
-              : 0,
+            ...canceling.meta,
+            transferred: canceling.received,
+            progress: canceling.meta.size ? canceling.received / canceling.meta.size : 0,
             speed: 0,
             status: "canceled",
           });
-          this.current = null;
         }
         this.callbacks.onCancel?.(msg.id);
         break;
@@ -279,7 +375,7 @@ export class FileReceiver {
   private handleChunk(buf: ArrayBuffer) {
     const cur = this.current;
     if (!cur) return; // stray chunk without a file-start; ignore defensively
-    cur.chunks.push(buf);
+    cur.sink.write(buf);
     cur.received += buf.byteLength;
 
     const now = performance.now();
@@ -299,29 +395,34 @@ export class FileReceiver {
     }
   }
 
-  private finishCurrent() {
-    const cur = this.current;
-    if (!cur) return;
-    const blob = new Blob(cur.chunks, {
-      type: cur.meta.type || "application/octet-stream",
-    });
-    const url = URL.createObjectURL(blob);
-    this.callbacks.onProgress({
-      ...cur.meta,
-      transferred: cur.meta.size,
-      progress: 1,
-      speed: 0,
-      status: "done",
-    });
-    this.callbacks.onFileComplete({
-      id: cur.meta.id,
-      name: cur.meta.name,
-      size: cur.meta.size,
-      type: cur.meta.type,
-      blob,
-      url,
-    });
-    this.ack({ kind: "file-received", id: cur.meta.id });
-    this.current = null;
+  private async finish(file: IncomingFile) {
+    try {
+      const out = await file.sink.close();
+      this.callbacks.onProgress({
+        ...file.meta,
+        transferred: file.meta.size,
+        progress: 1,
+        speed: 0,
+        status: "done",
+      });
+      this.callbacks.onFileComplete({
+        id: file.meta.id,
+        name: file.meta.name,
+        size: file.meta.size,
+        type: file.meta.type,
+        blob: out.blob,
+        url: out.url,
+        savedToDisk: out.savedToDisk,
+      });
+      this.ack({ kind: "file-received", id: file.meta.id });
+    } catch {
+      this.callbacks.onProgress({
+        ...file.meta,
+        transferred: file.received,
+        progress: file.meta.size ? file.received / file.meta.size : 0,
+        speed: 0,
+        status: "error",
+      });
+    }
   }
 }

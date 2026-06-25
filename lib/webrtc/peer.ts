@@ -142,6 +142,15 @@ export class Peer {
     return this.channel;
   }
 
+  /**
+   * The SCTP transport's max single-message size, once negotiated. The sender uses this
+   * to pick the largest safe chunk size (bigger = far less overhead for huge transfers).
+   * Returns 0 until the connection is up.
+   */
+  get maxMessageSize(): number {
+    return (this.pc as any).sctp?.maxMessageSize ?? 0;
+  }
+
   get connectionState(): RTCPeerConnectionState {
     return this.pc.connectionState;
   }

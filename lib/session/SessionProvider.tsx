@@ -36,8 +36,10 @@ import {
 } from "@/lib/signaling/client";
 import { Peer, isWebRTCSupported } from "@/lib/webrtc/peer";
 import {
+  canStreamToDisk,
   FileReceiver,
   FileSender,
+  makeSink,
   ProgressUpdate,
   ReceivedFile,
 } from "@/lib/webrtc/transfer";
@@ -70,6 +72,10 @@ interface SessionState {
   error: SessionError | null;
   /** Bumped each time a peer freshly connects — lets the UI fire the splash. */
   connectNonce: number;
+  /** True if this browser can stream incoming files straight to a chosen folder. */
+  canSaveToDisk: boolean;
+  /** Set once the receiver picks a destination folder for streamed-to-disk files. */
+  saveFolderName: string | null;
 }
 
 interface SessionApi extends SessionState {
@@ -81,6 +87,12 @@ interface SessionApi extends SessionState {
   cancelOutgoing: (id?: string) => void;
   clearReceived: () => void;
   reset: () => void;
+  /**
+   * Ask the receiver to pick a folder; incoming files then stream straight to disk
+   * (bounded memory — required for very large / many-file transfers). Resolves false if
+   * unsupported or the user cancels.
+   */
+  chooseReceiveFolder: () => Promise<boolean>;
 }
 
 const SessionContext = createContext<SessionApi | null>(null);
@@ -105,6 +117,8 @@ const initialState: SessionState = {
   received: [],
   error: null,
   connectNonce: 0,
+  canSaveToDisk: false,
+  saveFolderName: null,
 };
 
 /** One outgoing file we've chosen to share this session (id is stable across peers). */
@@ -124,6 +138,9 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const iceServersRef = useRef<RTCIceServer[] | undefined>(undefined);
   // Bumped on every start/teardown to cancel a superseded async ICE resolution.
   const startTokenRef = useRef(0);
+  // Receiver "stream to disk" destination (File System Access dir handle) + name dedupe.
+  const dirHandleRef = useRef<any | null>(null);
+  const usedNamesRef = useRef<Set<string>>(new Set());
 
   // Mesh: one Peer (+ sender/receiver/send-chain) per remote peer id.
   const peersRef = useRef<Map<string, Peer>>(new Map());
@@ -148,6 +165,25 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
 
   const mergeIncoming = useCallback((u: ProgressUpdate) => {
     setState((s) => ({ ...s, incoming: upsert(s.incoming, u) }));
+  }, []);
+
+  // Give each disk-streamed file a unique, filesystem-safe name within the chosen folder
+  // so 100 files (some sharing a name) never overwrite each other.
+  const uniqueName = useCallback((name: string): string => {
+    const used = usedNamesRef.current;
+    const safe = sanitizeFileName(name);
+    if (!used.has(safe)) {
+      used.add(safe);
+      return safe;
+    }
+    const dot = safe.lastIndexOf(".");
+    const base = dot > 0 ? safe.slice(0, dot) : safe;
+    const ext = dot > 0 ? safe.slice(dot) : "";
+    let i = 1;
+    while (used.has(`${base} (${i})${ext}`)) i++;
+    const final = `${base} (${i})${ext}`;
+    used.add(final);
+    return final;
   }, []);
 
   // ── outgoing aggregation: combine every peer's progress for a file into one row ──
@@ -228,7 +264,8 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
 
       let sender = sendersRef.current.get(peerId);
       if (!sender) {
-        sender = new FileSender(channel, (u) => mergeOutgoing(peerId, u));
+        const maxMsg = peersRef.current.get(peerId)?.maxMessageSize ?? 0;
+        sender = new FileSender(channel, (u) => mergeOutgoing(peerId, u), maxMsg);
         sendersRef.current.set(peerId, sender);
       }
       // Serialize all sends to this peer — concurrent sendFiles() on one channel would
@@ -292,9 +329,11 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
 
   const reset = useCallback(() => {
     teardown();
+    dirHandleRef.current = null;
+    usedNamesRef.current = new Set();
     setState((s) => {
-      s.received.forEach((f) => URL.revokeObjectURL(f.url));
-      return { ...initialState };
+      s.received.forEach((f) => f.url && URL.revokeObjectURL(f.url));
+      return { ...initialState, canSaveToDisk: canStreamToDisk() };
     });
   }, [teardown]);
 
@@ -335,7 +374,10 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
               },
               (data) => {
                 if (channel.readyState === "open") channel.send(data);
-              }
+              },
+              // Stream to the chosen folder when set (read live at each file-start), else
+              // fall back to an in-memory Blob.
+              (meta) => makeSink(meta, dirHandleRef.current, uniqueName)
             );
             receiversRef.current.set(remoteId, receiver);
             openChannelsRef.current.add(remoteId);
@@ -357,7 +399,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       if (initiator) void peer.start();
       return peer;
     },
-    [deliverToPeer, mergeIncoming, syncPeerState]
+    [deliverToPeer, mergeIncoming, syncPeerState, uniqueName]
   );
 
   // ── signaling wiring ──────────────────────────────────────────────────────────
@@ -495,13 +537,29 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
 
   const clearReceived = useCallback(() => {
     setState((s) => {
-      s.received.forEach((f) => URL.revokeObjectURL(f.url));
+      s.received.forEach((f) => f.url && URL.revokeObjectURL(f.url));
       return { ...s, received: [], incoming: [] };
     });
   }, []);
 
+  const chooseReceiveFolder = useCallback(async (): Promise<boolean> => {
+    const picker = (window as any).showDirectoryPicker;
+    if (typeof picker !== "function") return false;
+    try {
+      const handle = await picker({ mode: "readwrite" });
+      dirHandleRef.current = handle;
+      usedNamesRef.current = new Set();
+      setState((s) => ({ ...s, saveFolderName: handle.name ?? "selected folder" }));
+      return true;
+    } catch {
+      // User dismissed the picker, or permission denied — keep the in-memory path.
+      return false;
+    }
+  }, []);
+
   useEffect(() => {
     supportedRef.current = isWebRTCSupported();
+    setState((s) => ({ ...s, canSaveToDisk: canStreamToDisk() }));
   }, []);
 
   useEffect(() => () => teardown(), [teardown]);
@@ -516,11 +574,23 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       cancelOutgoing,
       clearReceived,
       reset,
+      chooseReceiveFolder,
     }),
-    [state, host, join, sendFiles, cancelOutgoing, clearReceived, reset]
+    [state, host, join, sendFiles, cancelOutgoing, clearReceived, reset, chooseReceiveFolder]
   );
 
   return <SessionContext.Provider value={api}>{children}</SessionContext.Provider>;
+}
+
+/** Strip path separators / illegal characters so a peer-supplied name is safe on disk. */
+function sanitizeFileName(name: string): string {
+  const base = (name || "file").split(/[\\/]/).pop() || "file";
+  // Replace characters invalid on Windows/macOS filesystems (keep spaces/hyphens/dots).
+  const cleaned = base
+    .replace(/[<>:"|?*]/g, "_")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned.slice(0, 200) || "file";
 }
 
 /** Upsert a progress row by id, preserving insertion order. */

@@ -2,7 +2,7 @@
 
 import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { KeyRound, ScanLine } from "lucide-react";
+import { FolderCheck, FolderInput, KeyRound, ScanLine } from "lucide-react";
 import { Header } from "@/components/ui/Header";
 import { Card } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
@@ -78,24 +78,42 @@ function ReceiveInner() {
 
   if (mode === "connecting" || session.phase === "pairing") {
     return (
-      <Card className="relative flex max-w-md flex-col items-center gap-5 p-10 text-center">
-        <Splash trigger={session.connectNonce} />
-        {/* "Looking for devices" radar pulse while we wait for the sender. */}
-        <Radar size={200} active={!session.peerPresent} />
-        <h2 className="font-display text-xl font-semibold text-text-primary">
-          {session.peerPresent ? "Connecting…" : "Looking for the other device…"}
-        </h2>
-        <p className="text-sm text-text-secondary">
-          Room <span className="font-mono text-text-primary">{session.roomCode}</span>
-        </p>
-        {slow && !session.peerPresent && (
-          <p className="max-w-xs text-sm text-text-muted">
-            Taking longer than usual. Make sure the other device has DropWave open on the
-            <span className="text-text-secondary"> Send</span> screen with this code showing.
+      <div className="flex w-full max-w-md flex-col items-center gap-4">
+        <Card className="relative flex w-full flex-col items-center gap-5 p-10 text-center">
+          <Splash trigger={session.connectNonce} />
+          {/* "Looking for devices" radar pulse while we wait for the sender. */}
+          <Radar size={200} active={!session.peerPresent} />
+          <h2 className="font-display text-xl font-semibold text-text-primary">
+            {session.peerPresent ? "Connecting…" : "Looking for the other device…"}
+          </h2>
+          <p className="text-sm text-text-secondary">
+            Room <span className="font-mono text-text-primary">{session.roomCode}</span>
           </p>
-        )}
-        {session.error && <p className="text-sm text-error">{session.error.message}</p>}
-      </Card>
+          {slow && !session.peerPresent && (
+            <p className="max-w-xs text-sm text-text-muted">
+              Taking longer than usual. Make sure the other device has DropWave open on the
+              <span className="text-text-secondary"> Send</span> screen with this code showing.
+            </p>
+          )}
+          {session.error && <p className="text-sm text-error">{session.error.message}</p>}
+        </Card>
+
+        {/* Pick a destination folder up front so big/many files stream straight to disk
+            the instant they start arriving (Chromium desktop). */}
+        {session.canSaveToDisk &&
+          (session.saveFolderName ? (
+            <p className="flex items-center gap-1.5 text-xs text-success">
+              <FolderCheck size={14} /> Saving to {session.saveFolderName}
+            </p>
+          ) : (
+            <button
+              onClick={() => void session.chooseReceiveFolder()}
+              className="flex items-center gap-1.5 text-sm text-text-secondary underline-offset-4 hover:text-ink hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink/40"
+            >
+              <FolderInput size={15} /> Receiving large files? Save to a folder
+            </button>
+          ))}
+      </div>
     );
   }
 

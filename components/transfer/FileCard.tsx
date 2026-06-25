@@ -13,6 +13,7 @@ import {
   ArrowUpFromLine,
   Check,
   Download,
+  FolderCheck,
   Share2,
   X,
 } from "lucide-react";
@@ -28,6 +29,8 @@ export interface FileCardProps {
   downloadUrl?: string;
   onShare?: () => void;
   canShare?: boolean;
+  /** Received file was streamed straight to a folder on disk (no download needed). */
+  saved?: boolean;
 }
 
 export function FileCard({
@@ -37,6 +40,7 @@ export function FileCard({
   downloadUrl,
   onShare,
   canShare,
+  saved,
 }: FileCardProps) {
   const reduce = useReducedMotion();
   const done = file.status === "done";
@@ -131,8 +135,14 @@ export function FileCard({
                 <Download size={16} />
               </a>
             </>
+          ) : done && saved ? (
+            <span className="flex items-center gap-1 font-mono text-xs text-success">
+              <FolderCheck size={14} /> Saved
+            </span>
           ) : done ? (
-            <span className="font-mono text-xs text-success">Sent</span>
+            <span className="font-mono text-xs text-success">
+              {direction === "out" ? "Sent" : "Done"}
+            </span>
           ) : (
             <span className="font-mono text-sm tabular-nums text-text-primary">{pct}%</span>
           )}

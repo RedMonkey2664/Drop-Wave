@@ -6,6 +6,9 @@ import { AnimatePresence, motion as m } from "framer-motion";
 import {
   CheckCircle2,
   DownloadCloud,
+  FolderCheck,
+  FolderInput,
+  HardDriveDownload,
   Plus,
   Power,
   Users,
@@ -47,13 +50,19 @@ export default function TransferPage() {
   // "Download all": trigger each received file's download in turn. A short gap between
   // clicks keeps browsers from collapsing them into a single blocked request (and the
   // first one may ask permission to download multiple files — expected).
+  // Files held in memory (not streamed to disk) that can be saved via a download click.
+  const downloadable = useMemo(
+    () => session.received.filter((f) => !!f.url),
+    [session.received]
+  );
+
   async function downloadAll() {
-    if (downloadingAll || session.received.length === 0) return;
+    if (downloadingAll || downloadable.length === 0) return;
     setDownloadingAll(true);
     try {
-      for (const f of session.received) {
+      for (const f of downloadable) {
         const a = document.createElement("a");
-        a.href = f.url;
+        a.href = f.url!;
         a.download = f.name;
         document.body.appendChild(a);
         a.click();
@@ -67,7 +76,7 @@ export default function TransferPage() {
 
   async function share(id: string) {
     const file = receivedById.get(id);
-    if (!file) return;
+    if (!file || !file.blob) return;
     try {
       const f = new File([file.blob], file.name, { type: file.type });
       if (navigator.canShare?.({ files: [f] })) {
@@ -134,6 +143,33 @@ export default function TransferPage() {
           </button>
         </div>
 
+        {/* Save-to-disk: stream incoming files straight to a folder (bounded memory) —
+            essential for very large / many-file transfers. Chromium desktop only. */}
+        {session.canSaveToDisk &&
+          (session.saveFolderName ? (
+            <div className="mb-6 flex items-center gap-2 rounded-card border border-success/40 bg-bone/60 px-4 py-3 text-sm text-text-secondary">
+              <FolderCheck size={16} className="text-success" />
+              Saving incoming files straight to{" "}
+              <span className="font-medium text-text-primary">{session.saveFolderName}</span>
+            </div>
+          ) : (
+            <div className="mb-6 flex flex-col gap-3 rounded-card border border-border-subtle bg-bone/40 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+              <span className="flex items-start gap-2 text-sm text-text-secondary">
+                <HardDriveDownload size={16} className="mt-0.5 shrink-0 text-text-primary" />
+                Sending many or very large files? Stream them straight to a folder — no size
+                limit, and they’re saved as they arrive.
+              </span>
+              <Button
+                variant="secondary"
+                size="md"
+                className="shrink-0"
+                onClick={() => void session.chooseReceiveFolder()}
+              >
+                <FolderInput size={15} /> Choose folder
+              </Button>
+            </div>
+          ))}
+
         {/* peer-left recovery message */}
         {session.phase === "pairing" && !connected && (
           <Card className="mb-6 p-5 text-center text-sm text-text-secondary">
@@ -172,7 +208,7 @@ export default function TransferPage() {
           <Section
             title="Receiving"
             action={
-              session.received.length >= 2 ? (
+              downloadable.length >= 2 ? (
                 <button
                   onClick={downloadAll}
                   disabled={downloadingAll}
@@ -188,7 +224,7 @@ export default function TransferPage() {
                     )}
                   />
                   <span className="relative z-10 transition-colors group-hover:text-paper">
-                    {downloadingAll ? "Saving…" : `Download all · ${session.received.length}`}
+                    {downloadingAll ? "Saving…" : `Download all · ${downloadable.length}`}
                   </span>
                 </button>
               ) : null
@@ -209,7 +245,8 @@ export default function TransferPage() {
                         file={file}
                         direction="in"
                         downloadUrl={got?.url}
-                        canShare={canShare && !!got}
+                        saved={!!got?.savedToDisk}
+                        canShare={canShare && !!got?.blob}
                         onShare={() => share(file.id)}
                       />
                     </m.div>

@@ -216,7 +216,16 @@ export class FileSender {
 
     this.onProgress({ ...meta, transferred: 0, progress: 0, speed: 0, status: "active" });
 
-    while (offset < file.size) {
+    // Read a chunk off disk as an ArrayBuffer (async — yields to the event loop).
+    const readAt = (at: number): Promise<ArrayBuffer> =>
+      file.slice(at, at + this.chunkSize).arrayBuffer();
+
+    // Pipeline: keep the NEXT chunk's disk read in flight while we drain + send the
+    // current one, so disk I/O overlaps network I/O instead of stalling it. Decisive
+    // when moving 100 GB — the read latency of each chunk is otherwise paid serially.
+    let pending: Promise<ArrayBuffer> | null = offset < file.size ? readAt(offset) : null;
+
+    while (pending) {
       if (this.batchCanceled || this.canceled.has(meta.id)) {
         this.onProgress({
           ...meta,
@@ -228,13 +237,15 @@ export class FileSender {
         return;
       }
 
-      await this.waitForDrain();
+      const buf = await pending;
+      const nextOffset = offset + buf.byteLength;
+      // Kick off the next read immediately, before we block on backpressure/send.
+      pending = nextOffset < file.size ? readAt(nextOffset) : null;
 
-      const slice = file.slice(offset, offset + this.chunkSize);
-      const buf = await slice.arrayBuffer(); // async read — yields to the event loop
+      await this.waitForDrain();
       this.send(buf);
 
-      offset += buf.byteLength;
+      offset = nextOffset;
       transferred += buf.byteLength;
 
       // Update smoothed speed roughly every 200ms to avoid render thrash.

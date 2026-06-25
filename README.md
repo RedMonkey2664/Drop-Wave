@@ -50,9 +50,14 @@ auto-discovery.
 2. **Connection.** The two browsers negotiate a direct **WebRTC DataChannel** using STUN
    for ICE. On the same Wi-Fi the path stays **local** — no internet round-trips for the
    data, and it works offline.
-3. **Transfer.** Files are **chunked** (16 KiB) and streamed over the DataChannel with
-   **backpressure** so memory stays bounded and the UI stays at 60fps. Multiple files per
-   session; either side can send more **without re-pairing**.
+3. **Transfer.** Files are **chunked** (the sender negotiates the largest safe chunk up
+   from the SCTP transport — up to **1 MiB**, falling back to a 16 KiB iOS-Safari-safe
+   floor) and streamed over the DataChannel with **backpressure** so memory stays bounded
+   and the UI stays at 60fps. Reads are **pipelined** (the next chunk loads off disk while
+   the current one sends) to keep a fast LAN saturated. On the receiver, picking a
+   destination folder streams each file **straight to disk**, so **100 files × 1 GB+
+   (100 GB+)** moves with flat memory use. Multiple files per session; either side can
+   send more **without re-pairing**.
 
 **Privacy invariant:** the signaling server only ever sees small JSON handshake blobs.
 It cannot see file names or bytes. Once the channel opens it's out of the loop entirely.

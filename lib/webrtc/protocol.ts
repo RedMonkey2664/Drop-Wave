@@ -21,16 +21,21 @@
  */
 export const CHUNK_SIZE = 16 * 1024;
 export const CHUNK_SIZE_MIN = 16 * 1024; // 16 KiB — iOS-Safari-safe floor
-export const CHUNK_SIZE_MAX = 256 * 1024; // 256 KiB — fast, still widely supported
-export const CHUNK_SIZE_TARGET = 64 * 1024; // used when maxMessageSize is unknown
+export const CHUNK_SIZE_MAX = 1024 * 1024; // 1 MiB — used when SCTP negotiates room for it
+export const CHUNK_SIZE_TARGET = 256 * 1024; // used when maxMessageSize is unknown
 
 /**
  * Backpressure thresholds for channel.bufferedAmount. We stop feeding the channel above
  * HIGH_WATER and resume (via `bufferedamountlow`) below LOW_WATER, keeping memory bounded
- * and the UI smooth even across 100 GB. Raised for higher sustained desktop throughput.
+ * and the UI smooth even across 100 GB.
+ *
+ * Sizing trade-off: a deeper buffer keeps a fast LAN pipe saturated (the sender refills
+ * less often, so throughput stays high), at the cost of holding that many bytes queued in
+ * the sender AND, indirectly, bounding how far the receiver's disk-write queue can fall
+ * behind. 64/16 MB keeps a gigabit-class LAN full while staying well within desktop RAM.
  */
-export const BUFFER_HIGH_WATER = 16 * 1024 * 1024; // 16 MB
-export const BUFFER_LOW_WATER = 4 * 1024 * 1024; // 4 MB
+export const BUFFER_HIGH_WATER = 64 * 1024 * 1024; // 64 MB
+export const BUFFER_LOW_WATER = 16 * 1024 * 1024; // 16 MB
 
 export interface FileMeta {
   id: string;

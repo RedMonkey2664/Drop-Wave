@@ -198,7 +198,13 @@ export class FileSender {
 
     for (let i = 0; i < files.length; i++) {
       if (this.batchCanceled) break;
-      await this.sendOne(files[i], metas[i]);
+      // sendOne already isolates per-file failures, but guard here too so a single
+      // unexpected throw can never strand the rest of the batch (or skip batch-complete).
+      try {
+        await this.sendOne(files[i], metas[i]);
+      } catch {
+        /* file marked errored inside sendOne; keep going */
+      }
     }
 
     if (!this.batchCanceled) this.send(encodeControl({ kind: "batch-complete" }));
@@ -216,54 +222,85 @@ export class FileSender {
 
     this.onProgress({ ...meta, transferred: 0, progress: 0, speed: 0, status: "active" });
 
-    // Read a chunk off disk as an ArrayBuffer (async — yields to the event loop).
-    const readAt = (at: number): Promise<ArrayBuffer> =>
-      file.slice(at, at + this.chunkSize).arrayBuffer();
+    // Read a chunk off disk as an ArrayBuffer, retrying transient failures. iOS Safari
+    // backs a picked video with a live Photos handle that can briefly fail to read
+    // (NotReadableError) — common when sending MANY videos, since later handles may not
+    // be ready yet or get reclaimed under memory pressure. A couple of short retries turns
+    // those transient failures into a successful read instead of a dead transfer.
+    const readAt = async (at: number): Promise<ArrayBuffer> => {
+      let lastErr: unknown;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          return await file.slice(at, at + this.chunkSize).arrayBuffer();
+        } catch (err) {
+          lastErr = err;
+          await new Promise((r) => setTimeout(r, 200 * (attempt + 1)));
+        }
+      }
+      throw lastErr;
+    };
 
     // Pipeline: keep the NEXT chunk's disk read in flight while we drain + send the
     // current one, so disk I/O overlaps network I/O instead of stalling it. Decisive
     // when moving 100 GB — the read latency of each chunk is otherwise paid serially.
     let pending: Promise<ArrayBuffer> | null = offset < file.size ? readAt(offset) : null;
 
-    while (pending) {
-      if (this.batchCanceled || this.canceled.has(meta.id)) {
-        this.onProgress({
-          ...meta,
-          transferred,
-          progress: meta.size ? transferred / meta.size : 0,
-          speed: 0,
-          status: "canceled",
-        });
-        return;
+    try {
+      while (pending) {
+        if (this.batchCanceled || this.canceled.has(meta.id)) {
+          pending?.catch(() => {}); // abandon the in-flight prefetch without a warning
+          this.onProgress({
+            ...meta,
+            transferred,
+            progress: meta.size ? transferred / meta.size : 0,
+            speed: 0,
+            status: "canceled",
+          });
+          return;
+        }
+
+        const buf = await pending;
+        const nextOffset = offset + buf.byteLength;
+        // Kick off the next read immediately, before we block on backpressure/send.
+        pending = nextOffset < file.size ? readAt(nextOffset) : null;
+
+        await this.waitForDrain();
+        this.send(buf);
+
+        offset = nextOffset;
+        transferred += buf.byteLength;
+
+        // Update smoothed speed roughly every 200ms to avoid render thrash.
+        const now = performance.now();
+        const dt = now - lastTime;
+        if (dt >= 200) {
+          const instantaneous = ((transferred - lastBytes) / dt) * 1000;
+          speed = speed === 0 ? instantaneous : speed * 0.7 + instantaneous * 0.3;
+          lastTime = now;
+          lastBytes = transferred;
+          this.onProgress({
+            ...meta,
+            transferred,
+            progress: meta.size ? transferred / meta.size : 1,
+            speed,
+            status: "active",
+          });
+        }
       }
-
-      const buf = await pending;
-      const nextOffset = offset + buf.byteLength;
-      // Kick off the next read immediately, before we block on backpressure/send.
-      pending = nextOffset < file.size ? readAt(nextOffset) : null;
-
-      await this.waitForDrain();
-      this.send(buf);
-
-      offset = nextOffset;
-      transferred += buf.byteLength;
-
-      // Update smoothed speed roughly every 200ms to avoid render thrash.
-      const now = performance.now();
-      const dt = now - lastTime;
-      if (dt >= 200) {
-        const instantaneous = ((transferred - lastBytes) / dt) * 1000;
-        speed = speed === 0 ? instantaneous : speed * 0.7 + instantaneous * 0.3;
-        lastTime = now;
-        lastBytes = transferred;
-        this.onProgress({
-          ...meta,
-          transferred,
-          progress: meta.size ? transferred / meta.size : 1,
-          speed,
-          status: "active",
-        });
-      }
+    } catch {
+      // A read or send failed for THIS file after retries. Don't let one bad video kill
+      // the whole batch: tell the receiver to discard the partial file, mark this one
+      // errored, and return so sendFiles() moves on to the next file.
+      pending?.catch(() => {});
+      this.send(encodeControl({ kind: "cancel", id: meta.id }));
+      this.onProgress({
+        ...meta,
+        transferred,
+        progress: meta.size ? transferred / meta.size : 0,
+        speed: 0,
+        status: "error",
+      });
+      return;
     }
 
     this.send(encodeControl({ kind: "file-end", id: meta.id }));
@@ -337,6 +374,21 @@ export class FileReceiver {
         }
         break;
       case "file-start":
+        // Defensive: if a previous file never got a file-end (sender errored mid-file),
+        // tear down its partial sink and flag it so we don't leak an open disk writable
+        // or leave a row stuck "active".
+        if (this.current) {
+          const stale = this.current;
+          this.current = null;
+          void stale.sink.abort();
+          this.callbacks.onProgress({
+            ...stale.meta,
+            transferred: stale.received,
+            progress: stale.meta.size ? stale.received / stale.meta.size : 0,
+            speed: 0,
+            status: "error",
+          });
+        }
         this.current = {
           meta: msg.meta,
           sink: this.sinkFactory(msg.meta),

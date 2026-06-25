@@ -209,10 +209,50 @@ A `GET /health` endpoint is provided for platform health checks. See
 > traverse strict/symmetric NATs across the internet, add a TURN server to
 > `NEXT_PUBLIC_STUN_URLS`-style config; note that TURN *does* relay encrypted bytes.)
 
+| Env var (offline) | Purpose | Default |
+|---|---|---|
+| `SIGNALING_TLS_CERT` | Path to a TLS cert → signaling serves `wss://` | _(none → `ws://`)_ |
+| `SIGNALING_TLS_KEY` | Path to the matching private key | _(none)_ |
+
+---
+
+## Fully offline mode (venues with no internet)
+
+DropWave can run with **zero internet** — the app and the signaling relay both run on the
+**sending laptop** and everything travels over the local Wi-Fi. One command:
+
+```bash
+npm run offline
+```
+
+It serves the app at `https://<this-laptop-LAN-IP>:3000`, runs the signaling relay
+locally, and prints the exact URL to open on the other device. The browser auto-points
+signaling at the laptop (the client derives it from the page's own host), and **Local
+Wi-Fi mode** keeps ICE on host/mDNS LAN candidates — no STUN/TURN, no cloud, nothing
+leaves the network.
+
+**iPhones need HTTPS** (Safari requires a secure context for WebRTC). Make a cert the
+phone will trust — `mkcert` works offline once its root CA is installed:
+
+```bash
+mkcert -install
+mkcert -cert-file certificates/cert.pem -key-file certificates/key.pem <LAN-IP> localhost
+# then install mkcert's root CA on the phone, and:
+npm run offline      # both app + signaling now serve over TLS automatically
+```
+
+Without certs it falls back to `http`/`ws`, which only works on `http://localhost` and
+some Android setups. Then on each device: open the printed URL, turn on **Local Wi-Fi**,
+pair, and share.
+
 ---
 
 ## Edge cases handled
 
+- **Connect-first flow** → you create/join a room and the connection is confirmed
+  **before** any file is chosen, so bytes are never queued against a half-open channel.
+  The transfer screen waits on the live connection and only offers the picker once a peer
+  is actually connected.
 - **Connection drops mid-transfer** → status flips to *Reconnecting*; signaling
   auto-reconnects and the room stays open for the peer to rejoin.
 - **Very large files** → chunked + backpressured; reads are async so the UI never freezes.

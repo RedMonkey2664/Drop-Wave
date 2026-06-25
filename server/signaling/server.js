@@ -23,10 +23,22 @@
  */
 
 const http = require("http");
+const https = require("https");
+const fs = require("fs");
 const { randomUUID } = require("crypto");
 const { WebSocketServer } = require("ws");
 
 const PORT = process.env.SIGNALING_PORT || process.env.PORT || 8080;
+
+// Optional TLS. Point these at a cert/key (e.g. an mkcert pair) and the server serves
+// `wss://` instead of `ws://`. This is what makes the FULLY-OFFLINE laptop mode work for
+// iPhones: Safari requires a secure context for WebRTC, so the LAN signaling endpoint
+// must be wss. With no certs set it falls back to plain ws (fine for localhost / dev).
+const TLS_CERT = process.env.SIGNALING_TLS_CERT;
+const TLS_KEY = process.env.SIGNALING_TLS_KEY;
+const useTls = Boolean(
+  TLS_CERT && TLS_KEY && fs.existsSync(TLS_CERT) && fs.existsSync(TLS_KEY)
+);
 
 // Hard cap on peers per room. Standard 1:1 sharing uses 2; "group sharing" lets the
 // room's host raise this up to 4. Beyond a full mesh of 4 the N² connections get
@@ -47,7 +59,7 @@ const HEARTBEAT_MS = 30_000;
 const rooms = new Map();
 
 // A tiny health endpoint so platforms can health-check the deploy.
-const httpServer = http.createServer((req, res) => {
+function handleRequest(req, res) {
   if (req.url === "/health" || req.url === "/") {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(
@@ -55,6 +67,7 @@ const httpServer = http.createServer((req, res) => {
         service: "dropwave-signaling",
         status: "ok",
         rooms: rooms.size,
+        secure: useTls,
         note: "Handshake relay only. No file data passes through this server.",
       })
     );
@@ -62,7 +75,14 @@ const httpServer = http.createServer((req, res) => {
   }
   res.writeHead(404);
   res.end();
-});
+}
+
+const httpServer = useTls
+  ? https.createServer(
+      { cert: fs.readFileSync(TLS_CERT), key: fs.readFileSync(TLS_KEY) },
+      handleRequest
+    )
+  : http.createServer(handleRequest);
 
 const wss = new WebSocketServer({ server: httpServer });
 
@@ -190,6 +210,8 @@ const heartbeat = setInterval(() => {
 wss.on("close", () => clearInterval(heartbeat));
 
 httpServer.listen(PORT, () => {
-  console.log(`[dropwave-signaling] listening on :${PORT}`);
+  const scheme = useTls ? "wss" : "ws";
+  console.log(`[dropwave-signaling] listening on ${scheme}://0.0.0.0:${PORT}`);
+  if (useTls) console.log("[dropwave-signaling] TLS on — secure context ready for iOS.");
   console.log("[dropwave-signaling] handshake relay only — no file data passes here.");
 });

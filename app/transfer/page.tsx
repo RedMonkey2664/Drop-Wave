@@ -279,46 +279,48 @@ export default function TransferPage() {
           </Section>
         )}
 
-        {/* empty connected state */}
-        {!hasOutgoing && !hasIncoming && connected && (
-          <Card className="p-10 text-center">
-            <p className="text-text-secondary">
-              You’re connected. Send a file below — or wait for one to arrive.
-            </p>
-          </Card>
-        )}
-
-        {/* SEND MORE — without re-pairing */}
+        {/* SHARE — connect-first: the picker is the prominent action once a peer is up.
+            Nothing can be queued before the channel is open, so a transfer never starts
+            against a half-ready connection. */}
         <div className="mt-6">
-          <AnimatePresence mode="wait">
-            {showPicker ? (
-              <m.div
-                key="picker"
-                initial={{ opacity: 0, y: 12 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: 12 }}
+          {!connected ? (
+            <Card className="p-8 text-center">
+              <p className="text-text-secondary">
+                {unstable
+                  ? "Reconnecting… your files are safe. Sharing resumes automatically."
+                  : "Waiting for the other device to connect. Once it joins, you can pick files to share here."}
+              </p>
+            </Card>
+          ) : !hasOutgoing || showPicker ? (
+            <m.div
+              key="picker"
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+            >
+              {!hasOutgoing && (
+                <h2 className="mb-3 text-xs font-medium uppercase tracking-[0.18em] text-text-muted">
+                  Share files
+                </h2>
+              )}
+              <FilePicker
+                onFiles={(files) => {
+                  session.sendFiles(files);
+                  setShowPicker(false);
+                }}
+              />
+            </m.div>
+          ) : (
+            <m.div key="btn" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+              <Button
+                variant="secondary"
+                size="lg"
+                className="w-full"
+                onClick={() => setShowPicker(true)}
               >
-                <FilePicker
-                  onFiles={(files) => {
-                    session.sendFiles(files);
-                    setShowPicker(false);
-                  }}
-                />
-              </m.div>
-            ) : (
-              <m.div key="btn" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-                <Button
-                  variant="secondary"
-                  size="lg"
-                  className="w-full"
-                  disabled={!connected}
-                  onClick={() => setShowPicker(true)}
-                >
-                  <Plus size={18} /> Send more files
-                </Button>
-              </m.div>
-            )}
-          </AnimatePresence>
+                <Plus size={18} /> Send more files
+              </Button>
+            </m.div>
+          )}
         </div>
       </section>
     </main>

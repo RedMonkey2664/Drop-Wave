@@ -1,14 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { AnimatePresence, motion as m } from "framer-motion";
-import { ArrowRight, FileUp, Plus, Users } from "lucide-react";
+import { motion as m } from "framer-motion";
+import { ArrowRight, QrCode, RotateCcw } from "lucide-react";
 import { Header } from "@/components/ui/Header";
 import { Card } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
-import { FilePicker } from "@/components/transfer/FilePicker";
 import { QRDisplay } from "@/components/pairing/QRDisplay";
 import { RoomCodeDisplay } from "@/components/pairing/RoomCode";
 import { Radar } from "@/components/motion/Radar";
@@ -16,20 +15,24 @@ import { GroupToggle } from "@/components/pairing/GroupToggle";
 import { LocalModeToggle } from "@/components/pairing/LocalModeToggle";
 import { UnsupportedNotice } from "@/components/shared/UnsupportedNotice";
 import { useSession } from "@/lib/session/SessionProvider";
-import { formatBytes } from "@/lib/utils";
 
+/**
+ * Send flow is CONNECT-FIRST: create a room, get the other device connected, THEN share
+ * files on the live transfer screen. Pairing no longer races file selection — nothing is
+ * sent until a DataChannel is confirmed open, which removes a class of "error while
+ * sharing" bugs (queuing bytes before the peer is actually ready).
+ */
 export default function SendPage() {
   const router = useRouter();
   const session = useSession();
-  const [selected, setSelected] = useState<File[]>([]);
   const [groupOn, setGroupOn] = useState(false);
   const [localOn, setLocalOn] = useState(false);
-  // Step-2 "add more" picker (stack more batches onto this same session before/while pairing).
-  const [addingMore, setAddingMore] = useState(false);
   // After a while waiting for a device, surface a hint instead of waiting silently.
   const [slow, setSlow] = useState(false);
 
   const isGroup = session.capacity > 2;
+  // Step 1 = pick options + create room (idle). Step 2 = pairing/connected/error.
+  const onSetup = session.phase === "idle";
 
   // 1:1 → jump to the live transfer screen the moment the peer connects. Group → stay
   // on the invite screen so the host can add more devices, then continue manually.
@@ -47,23 +50,16 @@ export default function SendPage() {
     return () => clearTimeout(t);
   }, [waiting]);
 
-  function handleFiles(files: File[]) {
-    setSelected((prev) => [...prev, ...files]);
-    // Start pairing on first selection. host() resets any prior session, so we queue
-    // the files AFTER it so they survive into the new session and auto-send on connect.
-    if (session.phase === "idle") session.host(groupOn ? 4 : 2, { local: localOn });
-    session.sendFiles(files);
+  function createRoom() {
+    session.host(groupOn ? 4 : 2, { local: localOn });
   }
 
-  const joinUrl = useMemo(() => {
-    if (!session.roomCode || typeof window === "undefined") return "";
-    // Carry Local Wi-Fi mode in the link so a scanning device auto-matches it — no second
-    // toggle needed on the receiver.
-    const local = session.localMode ? "&local=1" : "";
-    return `${window.location.origin}/receive?room=${session.roomCode}${local}`;
-  }, [session.roomCode, session.localMode]);
-
-  const totalBytes = selected.reduce((n, f) => n + f.size, 0);
+  const joinUrl =
+    session.roomCode && typeof window !== "undefined"
+      ? `${window.location.origin}/receive?room=${session.roomCode}${
+          session.localMode ? "&local=1" : ""
+        }`
+      : "";
 
   if (!session.supported) {
     return (
@@ -73,31 +69,36 @@ export default function SendPage() {
     );
   }
 
-  // Step 1 — pick files (+ choose 1:1 vs group sharing).
-  if (selected.length === 0) {
+  // ── Step 1 — choose options, then create a room ──────────────────────────────
+  if (onSetup) {
     return (
       <Shell>
         <div className="w-full max-w-xl">
           <Heading
-            title="Send a file"
-            subtitle="Pick what to send, then show the code to the other device."
+            title="Send files"
+            subtitle="Create a room and connect the other device — then pick what to share."
           />
-          <div className="mb-5 flex flex-col gap-3">
+          <div className="mb-6 flex flex-col gap-3">
             <GroupToggle on={groupOn} onChange={setGroupOn} />
             <LocalModeToggle on={localOn} onChange={setLocalOn} />
           </div>
-          <FilePicker onFiles={handleFiles} />
+          <Button size="lg" className="w-full" onClick={createRoom}>
+            <QrCode size={18} /> Create a room
+          </Button>
+          <p className="mt-3 text-center text-xs text-text-muted">
+            You’ll choose files on the next screen, once a device has joined.
+          </p>
         </div>
       </Shell>
     );
   }
 
-  // Step 2 — pairing: QR + room code + radar while waiting for peers.
+  // ── Step 2 — pairing: QR + room code + radar while waiting for peers ─────────
   return (
     <Shell>
       <div className="flex w-full max-w-xl flex-col items-center">
         <Heading
-          title={isGroup ? "Invite up to 3 devices" : "Scan to receive"}
+          title={isGroup ? "Invite up to 3 devices" : "Scan to connect"}
           subtitle={
             isGroup
               ? "Each device scans this code (or types it) to join the group."
@@ -117,6 +118,9 @@ export default function SendPage() {
             {session.roomCode && <RoomCodeDisplay code={session.roomCode} />}
 
             <div className="flex items-center gap-2">
+              {session.localMode && (
+                <Badge tone="neutral">Local Wi-Fi mode</Badge>
+              )}
               {session.peerCount > 0 ? (
                 <Badge tone="aqua">
                   <span className="h-1.5 w-1.5 animate-breathe rounded-full bg-aqua" />
@@ -153,58 +157,7 @@ export default function SendPage() {
           </m.div>
         )}
 
-        {/* selected files summary */}
-        <m.div
-          initial={{ opacity: 0, y: 12 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="mt-6 flex w-full items-center justify-between rounded-card border border-border-subtle bg-surface/60 px-5 py-3 text-sm"
-        >
-          <span className="flex items-center gap-2 text-text-secondary">
-            <FileUp size={16} className="text-aqua" />
-            {selected.length} file{selected.length > 1 ? "s" : ""} ready
-            {isGroup && (
-              <span className="ml-1 inline-flex items-center gap-1 text-text-muted">
-                <Users size={13} /> group
-              </span>
-            )}
-          </span>
-          <span className="font-mono text-text-muted">{formatBytes(totalBytes)}</span>
-        </m.div>
-
-        {/* Add more files to this same share — no re-pairing. Lets you stack batches
-            (e.g. several swipes of videos from the iPhone Photos grid) up to any count. */}
-        <div className="mt-4 w-full">
-          <AnimatePresence mode="wait">
-            {addingMore ? (
-              <m.div
-                key="more-picker"
-                initial={{ opacity: 0, y: 12 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: 12 }}
-              >
-                <FilePicker
-                  onFiles={(files) => {
-                    handleFiles(files);
-                    setAddingMore(false);
-                  }}
-                />
-              </m.div>
-            ) : (
-              <m.div key="more-btn" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-                <Button
-                  variant="secondary"
-                  size="lg"
-                  className="w-full"
-                  onClick={() => setAddingMore(true)}
-                >
-                  <Plus size={18} /> Add more files
-                </Button>
-              </m.div>
-            )}
-          </AnimatePresence>
-        </div>
-
-        {slow && (
+        {slow && session.peerCount === 0 && (
           <p className="mt-4 max-w-sm text-center text-sm text-text-muted">
             Still waiting. On the other device, open this link or scan the QR — it should
             land on a “Connecting…” screen within a few seconds.
@@ -212,7 +165,14 @@ export default function SendPage() {
         )}
 
         {session.error && (
-          <p className="mt-4 text-center text-sm text-error">{session.error.message}</p>
+          <div className="mt-5 flex flex-col items-center gap-3">
+            <p className="max-w-sm text-center text-sm text-error">
+              {session.error.message}
+            </p>
+            <Button variant="secondary" onClick={() => session.reset()}>
+              <RotateCcw size={15} /> Start over
+            </Button>
+          </div>
         )}
       </div>
     </Shell>

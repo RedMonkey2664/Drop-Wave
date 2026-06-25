@@ -1,29 +1,27 @@
 "use client";
 
 /**
- * FilePicker — choose files to send. Drag-and-drop on desktop, native pickers on mobile.
+ * FilePicker — choose files to send. Drag-and-drop on desktop, native picker on mobile.
  *
- * Two explicit entry points, because of an iOS Safari quirk: a generic
- * `<input type="file" multiple>` (no `accept`) often opens the single-item photo path,
- * so picking *several* videos in one go fails. An input that explicitly accepts media
- * (`accept="image/*,video/*"`) instead opens iOS's native Photos grid with multi-select
- * checkmarks — the reliable way to grab many videos at once. We keep a second generic
- * input so non-media files ("anything") still work.
- *
- * Both inputs carry `multiple`; on desktop both just open the normal file dialog.
+ * iOS Safari note (important): we deliberately use a plain `<input type="file" multiple>`
+ * with NO `accept` attribute. Setting `accept="image/*"`/`"video/*"` makes iOS *convert*
+ * every selected asset at pick time (HEIC→JPEG, HEVC→H.264). For many large videos that
+ * conversion exhausts memory and WebKit kills the tab ("Safari closes by itself"). A
+ * generic input hands over the ORIGINAL files without that transcode — and modern iOS
+ * still lets you multi-select from the Photo Library. Combined with the streaming sender
+ * (see lib/webrtc/transfer.ts), this keeps memory flat while sending many big videos.
  *
  * Drag-over pulses the border (ANIMATION.md §4). Empty state shows a floating droplet.
  */
 
 import { useRef, useState } from "react";
 import { motion as m, useReducedMotion } from "framer-motion";
-import { Images, Paperclip } from "lucide-react";
+import { FolderOpen } from "lucide-react";
 import { DropLogo } from "@/components/motion/DropLogo";
 import { cn } from "@/lib/utils";
 
 export function FilePicker({ onFiles }: { onFiles: (files: File[]) => void }) {
-  const mediaInputRef = useRef<HTMLInputElement>(null);
-  const anyInputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
   const reduce = useReducedMotion();
 
@@ -34,25 +32,16 @@ export function FilePicker({ onFiles }: { onFiles: (files: File[]) => void }) {
     if (input) input.value = "";
   }
 
-  // Buttons live inside the clickable zone; stop their taps from also opening the
-  // generic picker (the zone's own onClick).
-  function open(ref: React.RefObject<HTMLInputElement>) {
-    return (e: React.MouseEvent) => {
-      e.stopPropagation();
-      ref.current?.click();
-    };
-  }
-
   return (
     <div
       role="button"
       tabIndex={0}
       aria-label="Choose files to send, or drag and drop them here"
-      onClick={() => mediaInputRef.current?.click()}
+      onClick={() => inputRef.current?.click()}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
-          mediaInputRef.current?.click();
+          inputRef.current?.click();
         }
       }}
       onDragOver={(e) => {
@@ -93,44 +82,31 @@ export function FilePicker({ onFiles }: { onFiles: (files: File[]) => void }) {
           {dragOver ? "Release to drop" : "Drop files here"}
         </p>
         <p className="mt-1.5 text-sm text-graphite">
-          Pick several photos &amp; videos at once, or any other files
+          Pick photos, videos, or any files — select several at once
         </p>
         <p className="mt-1 text-xs text-graphite/70">
-          On iPhone: in the photo grid, <span className="font-medium text-ink/80">drag
-          one finger across the thumbnails</span> to select many videos in one sweep.
+          On iPhone, choose <span className="font-medium text-ink/80">Photo Library</span> and
+          tap the videos you want. Sharing a lot of big videos? Add them in{" "}
+          <span className="font-medium text-ink/80">batches of ~10</span> so Safari stays
+          comfortable — they all join the same transfer.
         </p>
       </div>
 
-      {/* Explicit entry points. "Photos & videos" routes to iOS's multi-select grid. */}
-      <div className="flex flex-wrap items-center justify-center gap-3">
-        <button
-          type="button"
-          onClick={open(mediaInputRef)}
-          className="inline-flex h-10 items-center gap-2 rounded-button bg-ink px-5 text-[13px] font-medium text-paper transition-colors hover:bg-graphite focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink/60 focus-visible:ring-offset-2 focus-visible:ring-offset-putty"
-        >
-          <Images size={16} /> Photos &amp; videos
-        </button>
-        <button
-          type="button"
-          onClick={open(anyInputRef)}
-          className="inline-flex h-10 items-center gap-2 rounded-button border border-ink/80 bg-transparent px-5 text-[13px] font-medium text-ink transition-colors hover:bg-ink hover:text-paper focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink/60 focus-visible:ring-offset-2 focus-visible:ring-offset-putty"
-        >
-          <Paperclip size={15} /> Other files
-        </button>
-      </div>
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          inputRef.current?.click();
+        }}
+        className="inline-flex h-10 items-center gap-2 rounded-button bg-ink px-5 text-[13px] font-medium text-paper transition-colors hover:bg-graphite focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink/60 focus-visible:ring-offset-2 focus-visible:ring-offset-putty"
+      >
+        <FolderOpen size={16} /> Choose files
+      </button>
 
-      {/* Media picker: accept image/* + video/* so iOS opens the multi-select Photos grid. */}
+      {/* Generic multiple picker — NO `accept`, so iOS sends originals without the
+          memory-heavy HEIC/HEVC conversion that crashes Safari on big multi-video picks. */}
       <input
-        ref={mediaInputRef}
-        type="file"
-        accept="image/*,video/*"
-        multiple
-        className="hidden"
-        onChange={(e) => handleFiles(e.target.files, e.target)}
-      />
-      {/* Generic picker: no accept, so any file type can be chosen. */}
-      <input
-        ref={anyInputRef}
+        ref={inputRef}
         type="file"
         multiple
         className="hidden"

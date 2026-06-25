@@ -210,10 +210,17 @@ export class FileSender {
     if (!this.batchCanceled) this.send(encodeControl({ kind: "batch-complete" }));
   }
 
-  private async sendOne(file: File, meta: FileMeta) {
+  /**
+   * Send one file as fixed-size chunks. Returns its final status so the batch loop can
+   * react. Per-file failures are isolated: a single unreadable video is flagged and
+   * skipped, never aborting the rest of the batch.
+   */
+  private async sendOne(
+    file: File,
+    meta: FileMeta
+  ): Promise<"done" | "error" | "canceled"> {
     this.send(encodeControl({ kind: "file-start", meta }));
 
-    let offset = 0;
     let transferred = 0;
     // Speed smoothing: exponential moving average over recent throughput.
     let lastTime = performance.now();
@@ -222,33 +229,26 @@ export class FileSender {
 
     this.onProgress({ ...meta, transferred: 0, progress: 0, speed: 0, status: "active" });
 
-    // Read a chunk off disk as an ArrayBuffer, retrying transient failures. iOS Safari
-    // backs a picked video with a live Photos handle that can briefly fail to read
-    // (NotReadableError) — common when sending MANY videos, since later handles may not
-    // be ready yet or get reclaimed under memory pressure. A couple of short retries turns
-    // those transient failures into a successful read instead of a dead transfer.
-    const readAt = async (at: number): Promise<ArrayBuffer> => {
-      let lastErr: unknown;
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          return await file.slice(at, at + this.chunkSize).arrayBuffer();
-        } catch (err) {
-          lastErr = err;
-          await new Promise((r) => setTimeout(r, 200 * (attempt + 1)));
-        }
-      }
-      throw lastErr;
+    const report = () => {
+      const now = performance.now();
+      const dt = now - lastTime;
+      if (dt < 200) return; // throttle to ~5 updates/sec to avoid render thrash
+      const instantaneous = ((transferred - lastBytes) / dt) * 1000;
+      speed = speed === 0 ? instantaneous : speed * 0.7 + instantaneous * 0.3;
+      lastTime = now;
+      lastBytes = transferred;
+      this.onProgress({
+        ...meta,
+        transferred,
+        progress: meta.size ? transferred / meta.size : 1,
+        speed,
+        status: "active",
+      });
     };
 
-    // Pipeline: keep the NEXT chunk's disk read in flight while we drain + send the
-    // current one, so disk I/O overlaps network I/O instead of stalling it. Decisive
-    // when moving 100 GB — the read latency of each chunk is otherwise paid serially.
-    let pending: Promise<ArrayBuffer> | null = offset < file.size ? readAt(offset) : null;
-
     try {
-      while (pending) {
+      for await (const buf of this.produceChunks(file)) {
         if (this.batchCanceled || this.canceled.has(meta.id)) {
-          pending?.catch(() => {}); // abandon the in-flight prefetch without a warning
           this.onProgress({
             ...meta,
             transferred,
@@ -256,42 +256,17 @@ export class FileSender {
             speed: 0,
             status: "canceled",
           });
-          return;
+          return "canceled";
         }
-
-        const buf = await pending;
-        const nextOffset = offset + buf.byteLength;
-        // Kick off the next read immediately, before we block on backpressure/send.
-        pending = nextOffset < file.size ? readAt(nextOffset) : null;
-
         await this.waitForDrain();
         this.send(buf);
-
-        offset = nextOffset;
         transferred += buf.byteLength;
-
-        // Update smoothed speed roughly every 200ms to avoid render thrash.
-        const now = performance.now();
-        const dt = now - lastTime;
-        if (dt >= 200) {
-          const instantaneous = ((transferred - lastBytes) / dt) * 1000;
-          speed = speed === 0 ? instantaneous : speed * 0.7 + instantaneous * 0.3;
-          lastTime = now;
-          lastBytes = transferred;
-          this.onProgress({
-            ...meta,
-            transferred,
-            progress: meta.size ? transferred / meta.size : 1,
-            speed,
-            status: "active",
-          });
-        }
+        report();
       }
     } catch {
       // A read or send failed for THIS file after retries. Don't let one bad video kill
       // the whole batch: tell the receiver to discard the partial file, mark this one
       // errored, and return so sendFiles() moves on to the next file.
-      pending?.catch(() => {});
       this.send(encodeControl({ kind: "cancel", id: meta.id }));
       this.onProgress({
         ...meta,
@@ -300,7 +275,7 @@ export class FileSender {
         speed: 0,
         status: "error",
       });
-      return;
+      return "error";
     }
 
     this.send(encodeControl({ kind: "file-end", id: meta.id }));
@@ -311,6 +286,102 @@ export class FileSender {
       speed: 0,
       status: "done",
     });
+    return "done";
+  }
+
+  /**
+   * Yield a file as fixed-size ArrayBuffer chunks.
+   *
+   * PRIMARY path streams the file top-to-bottom via Blob.stream() — one sequential read.
+   * This is the key fix for iPhone videos: a picked video is backed by a live Photos
+   * handle that iOS may still be exporting/transcoding (HEVC .mov especially). The old
+   * random-access pattern — slice(offset, offset+n).arrayBuffer() at every offset — makes
+   * iOS re-seek into that not-yet-stable file thousands of times and frequently fails on
+   * large or multiple videos. A single forward stream matches how the file is produced and
+   * is far more reliable, so multi-video shares actually go through.
+   *
+   * FALLBACK (older Safari without Blob.stream) is random-access slicing, each read
+   * retried a few times to ride out transient NotReadableError hiccups.
+   */
+  private async *produceChunks(file: File): AsyncGenerator<ArrayBuffer> {
+    const size = this.chunkSize;
+
+    if (typeof (file as any).stream === "function") {
+      const reader: ReadableStreamDefaultReader<Uint8Array> = (file as any)
+        .stream()
+        .getReader();
+      try {
+        let leftover = new Uint8Array(0);
+        for (;;) {
+          const { done, value } = await this.readFromReader(reader);
+          if (done) break;
+          let data: Uint8Array = value as Uint8Array;
+          if (leftover.length) {
+            const merged = new Uint8Array(leftover.length + data.length);
+            merged.set(leftover, 0);
+            merged.set(data, leftover.length);
+            data = merged;
+          }
+          let off = 0;
+          while (data.length - off >= size) {
+            yield data.slice(off, off + size).buffer;
+            off += size;
+          }
+          leftover = data.slice(off); // compact copy of the remainder for the next round
+        }
+        if (leftover.length) yield leftover.slice().buffer;
+      } finally {
+        try {
+          await reader.cancel();
+        } catch {
+          /* reader already closed/errored */
+        }
+      }
+      return;
+    }
+
+    // Fallback: random-access slices with retries.
+    let offset = 0;
+    while (offset < file.size) {
+      const buf = await this.readSliceWithRetry(file, offset, size);
+      if (buf.byteLength === 0) break;
+      yield buf;
+      offset += buf.byteLength;
+    }
+  }
+
+  /** reader.read() with a few short retries (iOS export/read hiccups). */
+  private async readFromReader(
+    reader: ReadableStreamDefaultReader<Uint8Array>
+  ): Promise<{ done: boolean; value?: Uint8Array }> {
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        return await reader.read();
+      } catch (err) {
+        lastErr = err;
+        await new Promise((r) => setTimeout(r, 200 * (attempt + 1)));
+      }
+    }
+    throw lastErr;
+  }
+
+  /** slice().arrayBuffer() with a few short retries (fallback path). */
+  private async readSliceWithRetry(
+    file: File,
+    offset: number,
+    size: number
+  ): Promise<ArrayBuffer> {
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        return await file.slice(offset, offset + size).arrayBuffer();
+      } catch (err) {
+        lastErr = err;
+        await new Promise((r) => setTimeout(r, 200 * (attempt + 1)));
+      }
+    }
+    throw lastErr;
   }
 }
 

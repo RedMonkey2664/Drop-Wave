@@ -10,6 +10,16 @@ a server.**
 It solves the everyday pain of moving a file between an iPhone and a Windows PC, which
 AirDrop can't do and email/cloud make slow and account-bound.
 
+**Live demo:** [dropwave-five.vercel.app](https://dropwave-five.vercel.app)
+
+---
+
+## Demo
+
+https://github.com/user-attachments/assets/9f0050b8-a121-4701-b51d-de916c039c11
+
+![DropWave screenshot](docs/image.png)
+
 ---
 
 ## Why it's different
@@ -34,30 +44,30 @@ auto-discovery.
 ## How it works (architecture)
 
 ```
-   ┌──────────┐   SDP/ICE     ┌─────────────────┐   SDP/ICE    ┌──────────┐
-   │ Device A │ ────────────▶ │ signaling server│ ◀─────────── │ Device B │
-   │ (sender) │               │  (Node + ws)    │              │(receiver)│
-   └────┬─────┘               └─────────────────┘              └────┬─────┘
-        │                      handshake relay only                 │
-        │                      — never sees files —                 │
-        └────────── encrypted WebRTC DataChannel (P2P) ─────────────┘
-                          ⬆ ALL FILE BYTES TRAVEL HERE
+┌──────────┐ SDP/ICE ┌─────────────────┐ SDP/ICE ┌──────────┐
+│ Device A │ ────────────▶ │ signaling server│ ◀─────────── │ Device B │
+│ (sender) │ │ (Node + ws) │ │(receiver)│
+└────┬─────┘ └─────────────────┘ └────┬─────┘
+│ handshake relay only │
+│ — never sees files — │
+└────────── encrypted WebRTC DataChannel (P2P) ─────────────┘
+⬆ ALL FILE BYTES TRAVEL HERE
 ```
 
 1. **Pairing.** The sender creates a room and shows a **QR code + room code**. The
-   receiver **scans the QR** (camera) or **types the code**. This exchange goes through a
-   tiny **signaling server** whose only job is to relay the WebRTC handshake (SDP/ICE).
+receiver **scans the QR** (camera) or **types the code**. This exchange goes through a
+tiny **signaling server** whose only job is to relay the WebRTC handshake (SDP/ICE).
 2. **Connection.** The two browsers negotiate a direct **WebRTC DataChannel** using STUN
-   for ICE. On the same Wi-Fi the path stays **local** — no internet round-trips for the
-   data, and it works offline.
+for ICE. On the same Wi-Fi the path stays **local** — no internet round-trips for the
+data, and it works offline.
 3. **Transfer.** Files are **chunked** (the sender negotiates the largest safe chunk up
-   from the SCTP transport — up to **1 MiB**, falling back to a 16 KiB iOS-Safari-safe
-   floor) and streamed over the DataChannel with **backpressure** so memory stays bounded
-   and the UI stays at 60fps. Reads are **pipelined** (the next chunk loads off disk while
-   the current one sends) to keep a fast LAN saturated. On the receiver, picking a
-   destination folder streams each file **straight to disk**, so **100 files × 1 GB+
-   (100 GB+)** moves with flat memory use. Multiple files per session; either side can
-   send more **without re-pairing**.
+from the SCTP transport — up to **1 MiB**, falling back to a 16 KiB iOS-Safari-safe
+floor) and streamed over the DataChannel with **backpressure** so memory stays bounded
+and the UI stays at 60fps. Reads are **pipelined** (the next chunk loads off disk while
+the current one sends) to keep a fast LAN saturated. On the receiver, picking a
+destination folder streams each file **straight to disk**, so **100 files × 1 GB+
+(100 GB+)** moves with flat memory use. Multiple files per session; either side can
+send more **without re-pairing**.
 
 **Privacy invariant:** the signaling server only ever sees small JSON handshake blobs.
 It cannot see file names or bytes. Once the channel opens it's out of the loop entirely.
@@ -94,27 +104,27 @@ networks), it says so and tells you to turn it off to allow a relay.
 
 ```
 DropWave/
-├── app/                      # Next.js routes
-│   ├── page.tsx              # Landing (hero, Send / Receive)
-│   ├── send/                 # Sender flow (pick files → QR + code)
-│   ├── receive/              # Receiver flow (scan QR / enter code)
-│   └── transfer/             # Live transfer screen
+├── app/ # Next.js routes
+│ ├── page.tsx # Landing (hero, Send / Receive)
+│ ├── send/ # Sender flow (pick files → QR + code)
+│ ├── receive/ # Receiver flow (scan QR / enter code)
+│ └── transfer/ # Live transfer screen
 ├── components/
-│   ├── ui/                   # Button, Card, Badge, Header primitives
-│   ├── motion/               # DropLogo, HeroDrop, Radar, Splash, LiquidProgress
-│   ├── pairing/              # QRDisplay, QRScanner, RoomCode
-│   ├── transfer/             # FilePicker, FileCard
-│   ├── shared/               # TrustRow, UnsupportedNotice
-│   └── pwa/                  # ServiceWorkerRegistrar
+│ ├── ui/ # Button, Card, Badge, Header primitives
+│ ├── motion/ # DropLogo, HeroDrop, Radar, Splash, LiquidProgress
+│ ├── pairing/ # QRDisplay, QRScanner, RoomCode
+│ ├── transfer/ # FilePicker, FileCard
+│ ├── shared/ # TrustRow, UnsupportedNotice
+│ └── pwa/ # ServiceWorkerRegistrar
 ├── lib/
-│   ├── webrtc/               # peer.ts, transfer.ts (chunking), protocol.ts
-│   ├── signaling/            # client.ts (WS handshake client)
-│   ├── session/              # SessionProvider.tsx (the state machine)
-│   ├── theme/                # tokens.ts — the single source of truth for the look
-│   └── utils.ts
-├── server/signaling/         # standalone Node/ws server (deployable on its own)
+│ ├── webrtc/ # peer.ts, transfer.ts (chunking), protocol.ts
+│ ├── signaling/ # client.ts (WS handshake client)
+│ ├── session/ # SessionProvider.tsx (the state machine)
+│ ├── theme/ # tokens.ts — the single source of truth for the look
+│ └── utils.ts
+├── server/signaling/ # standalone Node/ws server (deployable on its own)
 ├── scripts/generate-icons.mjs# dependency-free PWA icon generator
-├── public/                   # manifest, service worker, icons
+├── public/ # manifest, service worker, icons
 └── CLAUDE.md / DESIGN.md / ANIMATION.md
 ```
 
@@ -129,14 +139,14 @@ Requires **Node 18+**.
 npm install
 
 # 2. install + run the signaling server (separate terminal)
-cd server/signaling && npm install && npm start     # ws://localhost:8080
+cd server/signaling && npm install && npm start # ws://localhost:8080
 # (back in the project root)
 
 # 3. point the app at the signaling server
-cp .env.example .env.local        # default already targets ws://localhost:8080
+cp .env.example .env.local # default already targets ws://localhost:8080
 
 # 4. run the web app
-npm run dev                       # http://localhost:3000
+npm run dev # http://localhost:3000
 ```
 
 Or run both at once from the project root (after both `npm install`s):
@@ -148,18 +158,18 @@ npm run dev:all
 ### Try a real transfer between two devices on your Wi-Fi
 1. Run the dev server bound to your LAN: `npm run dev -- -H 0.0.0.0`.
 2. **HTTPS is required** for camera + WebRTC on a phone (anything but `localhost`). Use a
-   tunnel (`ngrok http 3000`) or a local TLS proxy, and set
-   `NEXT_PUBLIC_SIGNALING_URL` to the matching `wss://…`.
+tunnel (`ngrok http 3000`) or a local TLS proxy, and set
+`NEXT_PUBLIC_SIGNALING_URL` to the matching `wss://…`.
 3. Open the HTTPS URL on your laptop, click **Send**, pick a photo. Scan the QR with your
-   iPhone. Watch it land.
+iPhone. Watch it land.
 
 ---
 
 ## Building for production (PWA)
 
 ```bash
-npm run build      # next build
-npm start          # serves the PWA (service worker registers in production only)
+npm run build # next build
+npm start # serves the PWA (service worker registers in production only)
 ```
 
 Regenerate the maskable PNG icons any time the mark changes:
@@ -183,12 +193,12 @@ The server in [`server/signaling/`](server/signaling/) is standalone and depende
 ```bash
 cd server/signaling
 npm install
-npm start            # respects $PORT / $SIGNALING_PORT
+npm start # respects $PORT / $SIGNALING_PORT
 ```
 
 Two production requirements:
 1. **Terminate TLS** so the endpoint is `wss://` — browsers require secure origins for
-   WebRTC/camera off `localhost`.
+WebRTC/camera off `localhost`.
 2. Set the web app's `NEXT_PUBLIC_SIGNALING_URL` to that `wss://…` URL.
 
 A `GET /health` endpoint is provided for platform health checks. See
@@ -238,7 +248,7 @@ phone will trust — `mkcert` works offline once its root CA is installed:
 mkcert -install
 mkcert -cert-file certificates/cert.pem -key-file certificates/key.pem <LAN-IP> localhost
 # then install mkcert's root CA on the phone, and:
-npm run offline      # both app + signaling now serve over TLS automatically
+npm run offline # both app + signaling now serve over TLS automatically
 ```
 
 Without certs it falls back to `http`/`ws`, which only works on `http://localhost` and
@@ -250,26 +260,26 @@ pair, and share.
 ## Edge cases handled
 
 - **Connect-first flow** → you create/join a room and the connection is confirmed
-  **before** any file is chosen, so bytes are never queued against a half-open channel.
-  The transfer screen waits on the live connection and only offers the picker once a peer
-  is actually connected.
+**before** any file is chosen, so bytes are never queued against a half-open channel.
+The transfer screen waits on the live connection and only offers the picker once a peer
+is actually connected.
 - **Connection drops mid-transfer** → status flips to *Reconnecting*; signaling
-  auto-reconnects and the room stays open for the peer to rejoin.
+auto-reconnects and the room stays open for the peer to rejoin.
 - **Very large files** → chunked + backpressured; reads are async so the UI never freezes.
 - **Unsupported browser** → calm, explanatory fallback (no WebRTC = clear guidance).
 - **Camera denied / absent** → automatically falls back to room-code entry.
 - **iOS Safari WebRTC quirks** → offerer creates the DataChannel before the offer; ICE
-  candidates are queued until the remote description is set; `binaryType = "arraybuffer"`;
-  camera video uses `playsInline + muted`. All commented inline in
-  [`lib/webrtc/peer.ts`](lib/webrtc/peer.ts) and [`components/pairing/QRScanner.tsx`](components/pairing/QRScanner.tsx).
+candidates are queued until the remote description is set; `binaryType = "arraybuffer"`;
+camera video uses `playsInline + muted`. All commented inline in
+[`lib/webrtc/peer.ts`](lib/webrtc/peer.ts) and [`components/pairing/QRScanner.tsx`](components/pairing/QRScanner.tsx).
 
 ## Accessibility & motion
 
 - Semantic HTML, keyboard-operable controls, visible focus rings, ARIA labels on
-  interactive elements.
+interactive elements.
 - Full `prefers-reduced-motion` support — every signature animation degrades to a calm
-  crossfade/static equivalent, and **state is never conveyed by motion alone** (always
-  paired with color + text). See [ANIMATION.md](ANIMATION.md).
+crossfade/static equivalent, and **state is never conveyed by motion alone** (always
+paired with color + text). See [ANIMATION.md](ANIMATION.md).
 
 ---
 
